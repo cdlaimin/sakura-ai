@@ -1,5 +1,36 @@
 ﻿# Git 提交日志
 
+## 2026-03-30
+
+fix: 修复 sed -i 在 bind mount 文件上报 Device or resource busy 的问题
+- 改用 tr + sed 输出到 /tmp 临时文件再执行，避免原地修改挂载文件
+- tr -d '\r' 去除 CRLF，sed 去除 BOM，写入 /tmp/init-clean.sh 后执行
+
+
+- openclaw-gateway command 改为先执行 sed 去除 CRLF(\r) 和 UTF-8 BOM，再运行脚本
+- 无论 Windows/Linux checkout 出何种格式，容器启动时自动修正，不再依赖文件本身格式
+
+
+- 重写 scripts/init-openclaw.sh，去除 UTF-8 BOM 和 CRLF 换行符，统一为 LF
+- 新增 .gitattributes，强制 *.sh 文件提交时保持 LF，防止 Windows 环境再次污染
+
+fix: 修复 Linux 容器部署时代理请求 ECONNREFUSED 127.0.0.1:18789 的问题
+- server/routes/openclaw.ts 代理路由改用 OPENCLAW_INTERNAL_HOST 环境变量指定目标地址
+- docker-compose.yml sakura-ai 服务新增 OPENCLAW_INTERNAL_HOST=openclaw-gateway（Docker 服务名）
+- .env.example 新增 OPENCLAW_INTERNAL_HOST 配置说明
+- 宿主机直接运行时不设置该变量，默认 fallback 到 localhost
+
+fix: 修复点击启动时报 No such container 错误
+- /start 接口改为先检查容器是否存在（GET /containers/{name}/json）
+- 容器不存在时返回 needInit: true 和初始化命令提示，而非直接报错
+- 前端 handleStart 处理 needInit 场景，弹出 Modal 显示宿主机初始化命令
+
+fix: 改用 Docker socket HTTP API 替代 docker CLI，无需重建镜像即可在 Linux 容器内管理 OpenClaw 容器
+- server/routes/openclaw.ts 新增 dockerSocketRequest() / isSocketAvailable()
+- /status /start /stop /restart /logs /update 全部改用 socket API，保留 CLI fallback
+- docker-compose.yml 挂载 /var/run/docker.sock
+- 前端新增 dockerAvailable 字段，Docker 不可用时显示警告并禁用操作按钮
+
 ## 2026-03-24
 
 fix: 修复 Canvas 画布打开后显示与 OpenClaw Gateway 控制面板相同页面的问题
