@@ -13,7 +13,7 @@
     "providers": {
       "zcheap": {
         "baseUrl": "https://zcheap.ai/v1",
-        "apiKey": "sk-bggqRWY2Y2dOqncIslkd7JaRhT4rHm5s8Gnw1Tsr5cVdUcEk",
+        "apiKey": "xxxx",
         "api": "openai-completions",
         "models": [
           {
@@ -59,8 +59,8 @@
   "channels": {
     "wecom": {
       "enabled": true,
-      "botId": "aibZ6zf-Vf2jjRltaLXm66jYzSJ9lf0vUb-",
-      "secret": "NWoXhj1yi5HHWy5SGtlow1kXwXdSroXgUjOHtccZA65"
+      "botId": "xxxx",
+      "secret": "xxxx"
     }
   },
   "gateway": {
