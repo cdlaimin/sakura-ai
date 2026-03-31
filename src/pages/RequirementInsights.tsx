@@ -1,0 +1,735 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Search, Trash2, ExternalLink, Calendar, Eye, FileUp
+} from 'lucide-react';
+import { Modal, Form, Input, Select, Pagination, Spin, Empty, Tag as AntTag, Upload as AntUpload, Tooltip, message } from 'antd';
+import { motion, AnimatePresence } from 'framer-motion';
+import { insightsService, InsightsArticle } from '../services/insightsService';
+import { useAuth } from '../contexts/AuthContext';
+import { showToast } from '../utils/toast';
+import {
+  MarketInsightQuickCreate,
+  INDUSTRY_NEWS_QUICK_CREATE_COPY,
+} from '../components/marketInsight/MarketInsightQuickCreate';
+import { ContentViewerModal, ContentDetail } from '../components/common/ContentViewerModal';
+import { AIThinking } from '../components/ai-generator/AIThinking';
+import { getApiBaseUrl } from '../config/api';
+import { getProjectVersions } from '../services/systemService';
+
+const CATEGORY_COLORS: Record<string, string> = {
+  '人工智能': 'blue',
+  '安全动态': 'red',
+  '其他': 'default',
+  '软件工程': 'green',
+  '开源工具': 'purple',
+  '云计算': 'cyan',
+  '前端技术': 'orange',
+  '后端技术': 'geekblue',
+  '数据库': 'gold',
+};
+
+const SOURCE_CONFIG: Record<string, { label: string; color: string }> = {
+  'market_insight': { label: '市场洞察', color: 'volcano' },
+  'digest_import': { label: '日报导入', color: 'purple' },
+  'manual': { label: '手动创建', color: 'cyan' },
+};
+
+function getCategoryColor(category: string): string {
+  return CATEGORY_COLORS[category] || 'default';
+}
+
+function getSourceConfig(source?: string | null) {
+  if (!source) return { label: '日报导入', color: 'purple' };
+  return SOURCE_CONFIG[source] || { label: source, color: 'default' };
+}
+
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+    + ' ' + d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+export function RequirementInsights() {
+  const { isSuperAdmin } = useAuth();
+
+  const [loading, setLoading] = useState(false);
+  const [articles, setArticles] = useState<InsightsArticle[]>([]);
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 10, total: 0, totalPages: 0 });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [selectedSource, setSelectedSource] = useState<string>('');
+  const [categories, setCategories] = useState<string[]>([]);
+
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [currentArticle, setCurrentArticle] = useState<InsightsArticle | null>(null);
+  const [viewerContent, setViewerContent] = useState<ContentDetail | null>(null);
+  const [convertLoading, setConvertLoading] = useState(false);
+  const [convertModalOpen, setConvertModalOpen] = useState(false);
+  const [generateState, setGenerateState] = useState<'idle' | 'generating' | 'success' | 'failed'>('idle');
+
+  const [importLoading, setImportLoading] = useState(false);
+  const [selectedArticleIds, setSelectedArticleIds] = useState<number[]>([]);
+
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const fetchArticles = useCallback(async (page = 1, pageSize = 10) => {
+    setLoading(true);
+    try {
+      const result = await insightsService.getArticles({
+        page,
+        pageSize,
+        search: searchTerm,
+        category: selectedCategory,
+        source: selectedSource
+      });
+      setArticles(result.data);
+      setPagination(result.pagination);
+      setSelectedArticleIds((prev) => prev.filter((id) => result.data.some((item) => item.id === id)));
+    } catch (error: any) {
+      showToast.error(error.message || '获取文章列表失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [searchTerm, selectedCategory, selectedSource]);
+
+  const fetchCategories = useCallback(async () => {
+    try {
+      const cats = await insightsService.getCategories();
+      setCategories(cats);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshAfterQuickCreate = useCallback(async () => {
+    await fetchArticles(1, pagination.pageSize);
+    fetchCategories();
+  }, [fetchArticles, pagination.pageSize, fetchCategories]);
+
+  useEffect(() => {
+    fetchArticles(pagination.page, pagination.pageSize);
+  }, [fetchArticles]);
+
+  useEffect(() => {
+    fetchCategories();
+  }, [fetchCategories]);
+
+  const handleSearch = (value: string) => {
+    setSearchTerm(value);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setPagination(prev => ({ ...prev, page: 1 }));
+    }, 300);
+  };
+
+  const handleCategoryChange = (value: string) => {
+    setSelectedCategory(value);
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const handleSourceChange = (value: string) => {
+    setSelectedSource(value);
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const handlePageChange = (page: number, pageSize: number) => {
+    setPagination(prev => ({ ...prev, page, pageSize }));
+    fetchArticles(page, pageSize);
+  };
+
+  const handleViewArticle = async (article: InsightsArticle) => {
+    setDetailModalOpen(true);
+    setDetailLoading(true);
+    setCurrentArticle(article);
+    setViewerContent(null);
+    
+    try {
+      // 使用深度阅读 API 获取文章完整内容
+      const deepReadResult = await insightsService.deepReadByUrl(article.url, article.title);
+      
+      // 更新当前文章信息
+      setCurrentArticle(article);
+      
+      // 转换为 ContentDetail 格式
+      setViewerContent({
+        title: deepReadResult.title || article.title,
+        summary: deepReadResult.summary || article.summary || undefined,
+        sourceUrl: deepReadResult.sourceUrl || article.url,
+        contentText: deepReadResult.contentText,
+        contentMarkdown: deepReadResult.contentMarkdown,
+        contentHtml: deepReadResult.contentHtml,
+        contentRawHtml: deepReadResult.contentRawHtml,
+        extractionMeta: deepReadResult.extractionMeta,
+      });
+    } catch (error: any) {
+      showToast.error('获取文章内容失败：' + (error.message || '未知错误'));
+      
+      // 失败时使用数据库中的内容作为后备
+      try {
+        const detail = await insightsService.getArticleDetail(article.id);
+        setCurrentArticle(detail);
+        
+        setViewerContent({
+          title: detail.title,
+          summary: detail.summary || undefined,
+          sourceUrl: detail.url,
+          contentText: detail.content,
+          contentMarkdown: detail.content,
+          extractionMeta: {
+            strategy: getSourceConfig(detail.source).label + '（数据库缓存）',
+            durationMs: undefined,
+            errorMessage: '深度阅读失败，显示数据库缓存内容',
+          },
+        });
+      } catch (fallbackError: any) {
+        showToast.error('获取文章详情失败');
+      }
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  const handleBatchImport = async (file: File) => {
+    setImportLoading(true);
+    try {
+      const result = await insightsService.batchImportArticles(file);
+      showToast.success(result.message || `成功导入 ${result.count} 篇文章`);
+      fetchArticles(1, pagination.pageSize);
+      fetchCategories();
+    } catch (error: any) {
+      showToast.error(error.message || '批量导入失败');
+    } finally {
+      setImportLoading(false);
+    }
+    return false;
+  };
+
+  const handleDeleteArticle = async (id: number) => {
+    Modal.confirm({
+      title: '确认删除',
+      content: '确定要删除这篇文章吗？',
+      okText: '删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await insightsService.deleteArticle(id);
+          showToast.success('文章已删除');
+          fetchArticles(pagination.page, pagination.pageSize);
+        } catch (error: any) {
+          showToast.error(error.message || '删除失败');
+        }
+      }
+    });
+  };
+
+  const handleToggleArticleSelected = (id: number, checked: boolean) => {
+    setSelectedArticleIds((prev) => {
+      if (checked) return prev.includes(id) ? prev : [...prev, id];
+      return prev.filter((x) => x !== id);
+    });
+  };
+
+  const handleToggleSelectAll = (checked: boolean) => {
+    if (!checked) {
+      setSelectedArticleIds([]);
+      return;
+    }
+    setSelectedArticleIds(articles.map((item) => item.id));
+  };
+
+  const handleBatchDeleteArticles = async () => {
+    if (!selectedArticleIds.length) return;
+    Modal.confirm({
+      title: '确认批量删除',
+      content: `确定要删除选中的 ${selectedArticleIds.length} 篇文章吗？`,
+      okText: '批量删除',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await insightsService.batchDeleteArticles(selectedArticleIds);
+          showToast.success(`已删除 ${selectedArticleIds.length} 篇文章`);
+          setSelectedArticleIds([]);
+          fetchArticles(1, pagination.pageSize);
+          fetchCategories();
+        } catch (error: any) {
+          showToast.error(error.message || '批量删除失败');
+        }
+      }
+    });
+  };
+
+  const handleCloseViewer = () => {
+    setDetailModalOpen(false);
+    setCurrentArticle(null);
+    setViewerContent(null);
+    setConvertLoading(false);
+    setGenerateState('idle');
+  };
+
+  // 点击"一键转需求文档"按钮，先弹出选项弹窗
+  const handleConvertToRequirement = () => {
+    setConvertModalOpen(true);
+  };
+
+  // 确认转换，执行 AI 生成
+  const handleDoGenerate = async (params: { title: string; projectId?: number; projectVersionId?: number }) => {
+    if (!currentArticle) return;
+    setConvertModalOpen(false);
+    setGenerateState('generating');
+    try {
+      await insightsService.generateRequirementFromArticle(currentArticle.id, params);
+      setGenerateState('success');
+      message.success('已一键生成需求文档');
+    } catch (err: any) {
+      setGenerateState('failed');
+      message.error(err.message || '生成失败，请稍后重试');
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      {/* 页面标题和操作 */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">行业资讯</h1>
+          <p className="text-sm text-[var(--color-text-secondary)] mt-1">汇聚行业动态与技术文章，来自市场洞察自动抓取和日报导入</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <MarketInsightQuickCreate
+            copy={INDUSTRY_NEWS_QUICK_CREATE_COPY}
+            onSettled={refreshAfterQuickCreate}
+          />
+          {isSuperAdmin && (
+            <AntUpload
+              accept=".md,.markdown"
+              showUploadList={false}
+              beforeUpload={(file) => { handleBatchImport(file); return false; }}
+            >
+              <motion.button
+                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                disabled={importLoading}
+              >
+                {importLoading ? <Spin size="small" /> : <FileUp className="h-4 w-4" />}
+                <span>批量导入</span>
+              </motion.button>
+            </AntUpload>
+          )}
+        </div>
+      </div>
+
+      {/* 筛选栏 */}
+      <div className="bg-[var(--color-bg-primary)] rounded-xl border border-[var(--color-border)] p-4">
+        <div className="flex flex-wrap gap-4 items-center">
+          <div className="flex-1 min-w-[200px]">
+            <Input
+              placeholder="搜索文章标题..."
+              prefix={<Search className="h-4 w-4 text-gray-400" />}
+              value={searchTerm}
+              onChange={(e) => handleSearch(e.target.value)}
+              allowClear
+            />
+          </div>
+          <Select
+            placeholder="全部分类"
+            value={selectedCategory || undefined}
+            onChange={handleCategoryChange}
+            allowClear
+            style={{ width: 160 }}
+            options={[
+              ...categories.map(c => ({ label: c, value: c }))
+            ]}
+          />
+          <Select
+            placeholder="全部来源"
+            value={selectedSource || undefined}
+            onChange={handleSourceChange}
+            allowClear
+            style={{ width: 140 }}
+            options={[
+              { label: '市场洞察', value: 'market_insight' },
+              { label: '日报导入', value: 'digest_import' },
+              { label: '手动创建', value: 'manual' },
+            ]}
+          />
+          {isSuperAdmin && (
+            <motion.button
+              className="flex items-center gap-2 px-3 py-2 border border-red-300 text-red-600 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              whileHover={{ scale: selectedArticleIds.length ? 1.02 : 1 }}
+              whileTap={{ scale: selectedArticleIds.length ? 0.98 : 1 }}
+              onClick={handleBatchDeleteArticles}
+              disabled={selectedArticleIds.length === 0}
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>批量删除（已选 {selectedArticleIds.length}）</span>
+            </motion.button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-4">
+        {/* 数据列表 */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)]">
+          {loading ? (
+            <div className="flex flex-1 items-center justify-center">
+              <Spin size="large" />
+            </div>
+          ) : articles.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center">
+              <Empty description="暂无文章数据" />
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto">
+              <table className="w-full">
+              <thead>
+                <tr className="bg-[var(--color-bg-secondary)]">
+                  {isSuperAdmin && (
+                    <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)] w-14">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 cursor-pointer"
+                        checked={articles.length > 0 && selectedArticleIds.length === articles.length}
+                        onChange={(e) => handleToggleSelectAll(e.target.checked)}
+                        aria-label="全选文章"
+                      />
+                    </th>
+                  )}
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">执行时间</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">分类</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">来源</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">报告标题</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">摘要</th>
+                  <th className="px-4 py-3 text-left text-sm font-semibold text-[var(--color-text-secondary)]">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <AnimatePresence>
+                  {articles.map((article, index) => (
+                    <motion.tr
+                      key={article.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.03 }}
+                      className="border-t border-[var(--color-border)] hover:bg-[var(--color-bg-secondary)] transition-colors"
+                    >
+                      {isSuperAdmin && (
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 cursor-pointer"
+                            checked={selectedArticleIds.includes(article.id)}
+                            onChange={(e) => handleToggleArticleSelected(article.id, e.target.checked)}
+                            aria-label={`选择文章-${article.id}`}
+                          />
+                        </td>
+                      )}
+                      <td className="px-4 py-3 text-sm text-[var(--color-text-secondary)] whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          {formatDate(article.published_at)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <AntTag color={getCategoryColor(article.category)}>
+                          {article.category}
+                        </AntTag>
+                      </td>
+                      <td className="px-4 py-3">
+                        <AntTag color={getSourceConfig(article.source).color} className="text-xs">
+                          {getSourceConfig(article.source).label}
+                        </AntTag>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="font-medium text-[var(--color-text-primary)]">
+                          {article.title}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-[var(--color-text-secondary)] max-w-xs truncate">
+                        {article.summary || '—'}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <Tooltip title="查看详情">
+                            <motion.button
+                              onClick={() => handleViewArticle(article)}
+                              className="p-1.5 rounded-lg text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
+                              whileHover={{ scale: 1.1 }}
+                              whileTap={{ scale: 0.95 }}
+                            >
+                              <Eye className="h-4 w-4" />
+                            </motion.button>
+                          </Tooltip>
+                          <Tooltip title="访问原文">
+                            <a
+                              href={article.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-lg text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+                            >
+                              <ExternalLink className="h-4 w-4" />
+                            </a>
+                          </Tooltip>
+                          {isSuperAdmin && (
+                            <Tooltip title="删除">
+                              <motion.button
+                                onClick={() => handleDeleteArticle(article.id)}
+                                className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                                whileHover={{ scale: 1.1 }}
+                                whileTap={{ scale: 0.95 }}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </motion.button>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </td>
+                    </motion.tr>
+                  ))}
+                </AnimatePresence>
+              </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* 分页 */}
+        {pagination.total > 0 && (
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-[var(--color-text-secondary)]">
+              共 {pagination.total} 条数据
+            </span>
+            <Pagination
+              current={pagination.page}
+              pageSize={pagination.pageSize}
+              total={pagination.total}
+              showSizeChanger
+              pageSizeOptions={['10', '20', '50', '100']}
+              onChange={handlePageChange}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* 文章详情弹窗 - 使用统一的 ContentViewerModal 组件 */}
+      <ContentViewerModal
+        open={detailModalOpen}
+        loading={detailLoading}
+        summaryLoading={detailLoading}
+        content={viewerContent}
+        onClose={handleCloseViewer}
+        showConvertButton={true}
+        convertButtonText="一键转需求文档"
+        convertLoading={convertLoading}
+        convertDisabled={!currentArticle || detailLoading}
+        onConvert={handleConvertToRequirement}
+        extraFooter={
+          currentArticle && (
+            <div className="flex items-center gap-3 text-sm text-gray-500">
+              <AntTag color={getCategoryColor(currentArticle.category)}>
+                {currentArticle.category}
+              </AntTag>
+              <AntTag color={getSourceConfig(currentArticle.source).color}>
+                {getSourceConfig(currentArticle.source).label}
+              </AntTag>
+              <span className="flex items-center gap-1">
+                <Calendar className="h-3.5 w-3.5" />
+                {formatDate(currentArticle.published_at)}
+              </span>
+              <a
+                href={currentArticle.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-500 hover:text-blue-600 flex items-center gap-1"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                原文链接
+              </a>
+            </div>
+          )
+        }
+      />
+
+      {/* 转需求文档选项弹窗 */}
+      <ConvertToRequirementModal
+        open={convertModalOpen}
+        articleTitle={currentArticle?.title || ''}
+        onClose={() => setConvertModalOpen(false)}
+        onConvert={handleDoGenerate}
+      />
+
+      {/* AI 生成进度弹窗 */}
+      <Modal
+        open={generateState === 'generating'}
+        footer={null}
+        closable={false}
+        maskClosable={false}
+        keyboard={false}
+        centered
+        width={720}
+        onCancel={() => undefined}
+      >
+        <AIThinking
+          title="AI 正在分析并生成需求文档"
+          subtitle="预计需要 30-90 秒，请耐心等待..."
+          progressItems={[
+            { label: '读取原始文本内容', status: 'processing' },
+            { label: 'AI分析结构和元素', status: 'pending' },
+            { label: '生成结构化的文档', status: 'pending' },
+          ]}
+        />
+      </Modal>
+
+      {/* 生成成功提示弹窗 */}
+      <Modal
+        open={generateState === 'success'}
+        title="需求文档生成成功"
+        onCancel={() => setGenerateState('idle')}
+        onOk={() => {
+          setGenerateState('idle');
+          window.open('/requirement-docs', '_blank', 'noopener,noreferrer');
+        }}
+        okText="前往需求管理"
+        cancelText="关闭"
+        centered
+      >
+        <p className="text-gray-600">需求文档已生成成功，可前往需求文档管理查看。</p>
+      </Modal>
+
+      {/* 生成失败提示弹窗 */}
+      <Modal
+        open={generateState === 'failed'}
+        title="需求文档生成失败"
+        onCancel={() => setGenerateState('idle')}
+        footer={[
+          <button key="close" onClick={() => setGenerateState('idle')} className="px-4 py-2 border rounded-lg text-gray-600 hover:bg-gray-50">
+            关闭
+          </button>,
+        ]}
+        centered
+      >
+        <p className="text-red-500">生成失败，请稍后重试。</p>
+      </Modal>
+    </div>
+  );
+}
+
+// ======================== 转需求文档弹窗 ========================
+
+function ConvertToRequirementModal({
+  open,
+  articleTitle,
+  onClose,
+  onConvert,
+}: {
+  open: boolean;
+  articleTitle: string;
+  onClose: () => void;
+  onConvert: (values: { title: string; projectId?: number; projectVersionId?: number }) => Promise<void>;
+}) {
+  const [form] = Form.useForm();
+  const [loading, setLoading] = useState(false);
+  const [projects, setProjects] = useState<any[]>([]);
+  const [projectVersionsMap, setProjectVersionsMap] = useState<Record<number, Array<any>>>({});
+  const [versionLoading, setVersionLoading] = useState(false);
+  const selectedProjectId = Form.useWatch('projectId', form) as number | undefined;
+  const projectVersions: Array<any> = selectedProjectId
+    ? (projectVersionsMap[selectedProjectId] ?? [])
+    : [];
+
+  useEffect(() => {
+    if (open) {
+      form.setFieldsValue({ title: articleTitle });
+      loadProjects();
+    } else {
+      form.resetFields(['projectId', 'projectVersionId']);
+    }
+  }, [open, articleTitle, form]);
+
+  const loadProjects = async () => {
+    try {
+      const token = localStorage.getItem('authToken');
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const res = await fetch(`${getApiBaseUrl('/api')}/v1/systems`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setProjects(data.data || []);
+      }
+    } catch { /* ignore */ }
+  };
+
+  const handleProjectChange = async (projectId?: number) => {
+    form.setFieldsValue({ projectId, projectVersionId: undefined });
+    if (!projectId) return;
+    try {
+      setVersionLoading(true);
+      const versions = await getProjectVersions(projectId);
+      setProjectVersionsMap((prev) => ({ ...prev, [projectId]: versions || [] }));
+      const mainVersion = (versions || []).find((v: any) => v.is_main) ?? (versions || [])[0];
+      form.setFieldValue('projectVersionId', mainVersion?.id);
+    } catch {
+      setProjectVersionsMap((prev) => ({ ...prev, [projectId]: [] }));
+    } finally {
+      setVersionLoading(false);
+    }
+  };
+
+  const handleOk = async () => {
+    try {
+      const values = await form.validateFields();
+      setLoading(true);
+      await onConvert({ title: values.title, projectId: values.projectId, projectVersionId: values.projectVersionId });
+      onClose();
+    } catch (err: any) {
+      if (err.errorFields) return;
+      message.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="转化为需求文档"
+      open={open}
+      onCancel={onClose}
+      onOk={handleOk}
+      confirmLoading={loading}
+      okText="确认转化"
+      cancelText="取消"
+    >
+      <Form form={form} layout="vertical">
+        <Form.Item label="需求文档标题" name="title" rules={[{ required: true, message: '请输入标题' }]}>
+          <Input />
+        </Form.Item>
+        <Form.Item label="关联项目" name="projectId">
+          <Select
+            placeholder="选择项目（可选）"
+            allowClear
+            options={projects.map((p: any) => ({ label: p.name, value: p.id }))}
+            onChange={(value) => handleProjectChange(value as number | undefined)}
+          />
+        </Form.Item>
+        <Form.Item label="关联版本" name="projectVersionId">
+          <Select
+            placeholder={selectedProjectId ? '选择版本（默认主线）' : '请先选择项目'}
+            allowClear
+            disabled={!selectedProjectId}
+            loading={versionLoading}
+            notFoundContent={selectedProjectId ? '暂无版本数据' : '请先选择项目'}
+            options={projectVersions.map((v: any) => ({
+              label: `${v.version_name}${v.is_main ? '（主线）' : ''}`,
+              value: v.id,
+            }))}
+          />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+export default RequirementInsights;

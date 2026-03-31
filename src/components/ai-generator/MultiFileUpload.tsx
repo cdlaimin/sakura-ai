@@ -1,8 +1,8 @@
-import React, { useCallback, useState } from 'react';
+﻿import React, { useCallback, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Modal } from 'antd';
-import { Upload, FileText, FileCode, Folder, X, CheckCircle, AlertCircle, Eye } from 'lucide-react';
+import { Upload, FileText, FileCode, Folder, X, CheckCircle, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { clsx } from 'clsx';
 import { MAX_FILE_SIZE, MAX_FILES } from '../../config/upload';
 
@@ -20,6 +20,8 @@ interface MultiFileUploadProps {
   onPageModeChange?: (mode: 'new' | 'modify') => void; // 🆕 页面模式回调
   onPreviewFile?: (file: File) => void; // 🆕 预览文件回调
   onClearPreview?: () => void; // 🆕 清空预览回调
+  hidePageName?: boolean; // 🆕 是否隐藏“页面名称”输入框
+  previewingFileName?: string; // 当前正在预览的文件名（用于切换睁眼/闭眼图标）
   maxFiles?: number;
   maxSize?: number; // in bytes
 }
@@ -37,6 +39,8 @@ export function MultiFileUpload({
   onPageModeChange,
   onPreviewFile,
   onClearPreview,
+  hidePageName = false,
+  previewingFileName, // 🆕 接收当前预览的文件名
   maxFiles = MAX_FILES, // 使用统一配置
   maxSize = MAX_FILE_SIZE // 使用统一配置 (AI模型最佳处理大小)
 }: MultiFileUploadProps) {
@@ -348,29 +352,33 @@ export function MultiFileUpload({
         </div>
       </Modal>
 
-      {/* 页面名称输入框 */}
-      <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
-        <label className="block text-sm font-medium text-gray-700 mb-2">
-          <span className="text-red-500">*</span> 页面名称
-        </label>
-        <input
-          type="text"
-          value={pageName}
-          onChange={handlePageNameChange}
-          placeholder="请输入页面名称，例如：登录页面（新增）"
-          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all text-sm"
-        />
-        <p className="mt-2 text-sm text-gray-700">
-          提示：页面名称将用于标识产品需求文档页面，建议使用清晰明确的名称
-        </p>
-      </div>
+      {!hidePageName && (
+        <>
+          {/* 页面名称输入框 */}
+          <div className="bg-white rounded-lg p-4 border border-gray-200 shadow-sm">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              <span className="text-red-500">*</span> 页面名称
+            </label>
+            <input
+              type="text"
+              value={pageName}
+              onChange={handlePageNameChange}
+              placeholder="请输入页面名称，例如：登录页面（新增）"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all text-sm"
+            />
+            <p className="mt-2 text-sm text-gray-700">
+              提示：页面名称将用于标识产品需求文档页面，建议使用清晰明确的名称
+            </p>
+          </div>
+        </>
+      )}
 
 
       {/* 拖拽上传区 */}
       <div
         {...getRootProps()}
         className={clsx(
-          "relative border-2 border-dashed rounded-2xl p-12 transition-all duration-300 cursor-pointer",
+          "relative border-2 border-dashed rounded-2xl p-9 transition-all duration-300 cursor-pointer",
           "bg-gradient-to-br hover:shadow-xl",
           isDragActive
             ? "border-blue-500 bg-blue-50 shadow-lg scale-[1.02]"
@@ -413,14 +421,14 @@ export function MultiFileUpload({
           <p className="text-sm text-gray-500 mb-6">
             {isDragActive
               ? '支持批量拖拽上传'
-              : '支持 HTML / JS / PDF / DOC / DOCX / Markdown / TXT | 最多 ' + maxFiles + ' 个文件'}
+              : '支持上传多种格式文件，最多 ' + maxFiles + ' 个文件，单个文件大小不超过 ' + Math.round(maxSize / 1024 / 1024) + 'MB'}
           </p>
 
           {/* 特性标签 */}
           <div className="flex items-center justify-center gap-8 text-sm">
             <div className="flex items-center gap-2 text-gray-500">
               <FileText className="w-5 h-5 text-orange-500" />
-              <span>HTML / DOC / DOCX / PDF / TXT / MD</span>
+              <span>HTML / TXT / PDF / DOC / DOCX / Markdown</span>
             </div>
             <div className="flex items-center gap-2 text-gray-500">
               <FileCode className="w-5 h-5 text-blue-500" />
@@ -536,9 +544,13 @@ export function MultiFileUpload({
                         onPreviewFile(item.file);
                       }}
                       className="p-1.5 rounded-md text-gray-400 hover:text-purple-600 hover:bg-purple-50 transition-all"
-                      title="预览文件内容"
+                      title={previewingFileName === item.file.name ? "关闭预览" : "预览文件内容"}
                     >
-                      <Eye className="w-5 h-5" />
+                      {previewingFileName === item.file.name ? (
+                        <EyeOff className="w-5 h-5" />
+                      ) : (
+                        <Eye className="w-5 h-5" />
+                      )}
                     </button>
                   )}
                   {/* 删除按钮 */}
@@ -561,8 +573,7 @@ export function MultiFileUpload({
       {uploadedFiles.length === 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-sm text-blue-700 leading-relaxed">
-            💡 <strong>提示：</strong>您可以直接拖拽整个 Axure 导出文件夹（自动识别 HTML/JS），也可以上传 PDF / DOC / DOCX / Markdown / TXT 等需求文档。
-            支持手动选择或批量拖拽上传。
+            💡 <strong>提示：</strong>您可以直接拖拽整个 Axure 导出文件夹（自动识别 HTML/JS），也可以上传 PDF / DOC / DOCX / Markdown / TXT 等需求文档，支持手动选择或批量拖拽上传，最多上传 {maxFiles} 个文件，单个文件大小不超过 {Math.round(maxSize / 1024 / 1024)}MB
           </p>
         </div>
       )}
