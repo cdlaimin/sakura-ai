@@ -2,17 +2,17 @@
 
 ## 2026-03-30
 
+fix: 修复 sakura-ai 容器读取 openclaw.json 报 ENOENT 的问题
+- docker-compose.yml sakura-ai 服务新增挂载 OPENCLAW_CONFIG_DIR -> /app/.openclaw
+- docker-compose.yml sakura-ai 服务新增环境变量 OPENCLAW_CONFIG_DIR=/app/.openclaw
+- server/routes/openclaw.ts configPath 改为优先读取 OPENCLAW_CONFIG_DIR 环境变量
+- sakura-ai 和 openclaw-gateway 共享同一份宿主机配置目录，路径不同但文件一致
+
 fix: 修复 sed -i 在 bind mount 文件上报 Device or resource busy 的问题
 - 改用 tr + sed 输出到 /tmp 临时文件再执行，避免原地修改挂载文件
-- tr -d '\r' 去除 CRLF，sed 去除 BOM，写入 /tmp/init-clean.sh 后执行
 
-
-- openclaw-gateway command 改为先执行 sed 去除 CRLF(\r) 和 UTF-8 BOM，再运行脚本
-- 无论 Windows/Linux checkout 出何种格式，容器启动时自动修正，不再依赖文件本身格式
-
-
-- 重写 scripts/init-openclaw.sh，去除 UTF-8 BOM 和 CRLF 换行符，统一为 LF
-- 新增 .gitattributes，强制 *.sh 文件提交时保持 LF，防止 Windows 环境再次污染
+fix: 修复 init-openclaw.sh CRLF/BOM 问题，docker-compose.yml 启动命令中用 tr+sed 动态清除
+- 新增 .gitattributes，强制 *.sh 文件提交时保持 LF
 
 fix: 修复 Linux 容器部署时代理请求 ECONNREFUSED 127.0.0.1:18789 的问题
 - server/routes/openclaw.ts 代理路由改用 OPENCLAW_INTERNAL_HOST 环境变量指定目标地址

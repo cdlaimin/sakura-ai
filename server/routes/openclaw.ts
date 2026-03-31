@@ -182,8 +182,11 @@ export function createOpenClawProxyRoute() {
 export function createOpenClawRoutes() {
   const router = Router();
 
-  // OpenClaw 配置文件路径
-  const configPath = path.join(process.cwd(), '.openclaw', 'openclaw.json');
+  // OpenClaw 配置文件路径（支持环境变量覆盖，默认读取挂载的 .openclaw 目录）
+  const openclawConfigDir = process.env.OPENCLAW_CONFIG_DIR
+    ? path.join(process.env.OPENCLAW_CONFIG_DIR, 'openclaw.json')
+    : path.join(process.cwd(), '.openclaw', 'openclaw.json');
+  const configPath = openclawConfigDir;
   
   // Docker 容器名称
   const OPENCLAW_CONTAINER = 'sakura-ai-openclaw';

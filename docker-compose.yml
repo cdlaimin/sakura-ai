@@ -162,6 +162,8 @@ services:
       
       # OpenClaw 内部访问地址（容器间通信用服务名，宿主机直接运行时留空用 localhost）
       OPENCLAW_INTERNAL_HOST: openclaw-gateway
+      # OpenClaw 配置目录（容器内挂载路径，用于读写 openclaw.json）
+      OPENCLAW_CONFIG_DIR: /app/.openclaw
       
       # 日志配置
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -176,6 +178,8 @@ services:
       - ./midscene_run:/app/midscene_run
       # 挂载 Docker socket，让容器内可以调用宿主机 Docker（管理 openclaw 容器）
       - /var/run/docker.sock:/var/run/docker.sock
+      # 挂载 OpenClaw 配置目录，用于读取/写入 openclaw.json 配置
+      - ${OPENCLAW_CONFIG_DIR:-./.openclaw}:/app/.openclaw
     depends_on:
       mysql:
         condition: service_healthy

@@ -1,9 +1,11 @@
 # Git 提交总结
 
-## 2026-03-28
 ## 2026-03-30
-fix: 改用 tr+sed 输出到 /tmp 临时文件执行，解决 bind mount 文件 sed -i 报 Device or resource busy 问题
+fix: sakura-ai 容器新增挂载+环境变量 OPENCLAW_CONFIG_DIR=/app/.openclaw，configPath 支持环境变量覆盖，修复读取 openclaw.json 报 ENOENT
 
+fix: 改用 tr+sed 输出到 /tmp 临时文件执行，解决 bind mount 文件 sed -i 报 Device or resource busy 问题；新增 .gitattributes 强制 sh 文件 LF
+
+## 2026-03-28
 fix: 修复 Linux 容器内代理 OpenClaw 请求 ECONNREFUSED，改用 OPENCLAW_INTERNAL_HOST 环境变量
 
 fix: 改用 Docker socket HTTP API 替代 docker CLI，无需重建镜像；/start 接口检测容器不存在时返回 needInit 提示，前端弹窗显示宿主机初始化命令
