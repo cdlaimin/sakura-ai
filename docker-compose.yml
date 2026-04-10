@@ -219,6 +219,7 @@ services:
     ports:
       - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
       - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+      - "8799:8799"
     init: true
     restart: unless-stopped
     command:
@@ -373,7 +374,7 @@ services:
     container_name: sakura-ai-nginx
     restart: unless-stopped
     ports:
-      - "443:443"  # OpenClaw Gateway HTTPS 代理端口（避免与 18789 冲突）
+      - "8443:443"  # OpenClaw Gateway HTTPS 代理端口（避免与 18789 冲突）
     volumes:
       # 站点配置文件（HTTP 反向代理配置）
       - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
