@@ -178,7 +178,7 @@ services:
   # OpenClaw（官方版）
   # 启动方式: docker compose --profile openclaw --profile nginx up -d
   openclaw-gateway:
-    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    image: ${OPENCLAW_IMAGE:-crpi-f4c88g7tayj7jwle.cn-hangzhou.personal.cr.aliyuncs.com/sakura-ai/sakura-openclaw:latest}
     container_name: sakura-ai-openclaw
     # 以 root 运行，确保对挂载卷有写入权限（生成证书、写配置等）
     user: "0:0"
