@@ -37,6 +37,11 @@ import type { PreAnalysisResult, UserConfirmation, EnhancedAxureData } from '../
 import { clsx } from 'clsx';
 import { getCaseTypeInfo } from '../utils/caseTypeHelper';
 import { countSteps } from '../utils/stepsCounter';
+import {
+  scrollToRequirementSectionInContainer,
+  inferModuleFromRequirementDoc,
+  pickBestModuleName
+} from '../utils/requirementDocNavigation';
 
 const { TextArea } = Input;
 
@@ -357,6 +362,20 @@ export function FunctionalTestCaseGenerator() {
   const [currentRequirementDoc, setCurrentRequirementDoc] = useState<RequirementDoc | null>(null);
   const [requirementLoading, setRequirementLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  /** 打开需求文档弹窗后滚动到该章节（关联需求标签） */
+  const [requirementScrollTarget, setRequirementScrollTarget] = useState<string | undefined>(undefined);
+  const requirementScrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // 需求文档弹窗加载完成后滚动到关联章节
+  useEffect(() => {
+    if (!requirementModalOpen || requirementLoading || !currentRequirementDoc?.content) return;
+    if (!requirementScrollTarget?.trim()) return;
+    const label = requirementScrollTarget.trim();
+    const t = window.setTimeout(() => {
+      scrollToRequirementSectionInContainer(requirementScrollContainerRef.current, label);
+    }, 150);
+    return () => clearTimeout(t);
+  }, [requirementModalOpen, requirementLoading, currentRequirementDoc?.content, requirementScrollTarget]);
 
   // 🆕 预览指定文件内容（文件上传模式）
   const handlePreviewFile = async (file?: File) => {
@@ -903,7 +922,15 @@ export function FunctionalTestCaseGenerator() {
     setGeneratingCases(prev => ({ ...prev, [pointKey]: true }));
 
     try {
+      const inferredModuleFromDoc = inferModuleFromRequirementDoc(
+        requirementDoc,
+        scenario.relatedSections?.[0] || ''
+      );
       console.log(`🎯 阶段3：${isRegenerate ? '重新' : ''}为测试点 "${testPoint.testPoint}" 生成测试用例...`);
+      const resolvedModuleForGeneration = pickBestModuleName(
+        projectInfo.moduleName,
+        inferredModuleFromDoc
+      );
       const result = await functionalTestCaseService.generateTestCaseForTestPoint(
         testPoint,
         scenario.id,
@@ -911,7 +938,7 @@ export function FunctionalTestCaseGenerator() {
         scenario.description || '',
         requirementDoc,
         projectInfo.systemName || '',
-        projectInfo.moduleName || '',
+        resolvedModuleForGeneration,
         scenario.relatedSections || [],  // 确保不是 undefined
         sessionId,
         projectInfo.projectId  // 🆕 传递项目ID，用于获取项目配置（访问地址、账号密码等）
@@ -927,13 +954,18 @@ export function FunctionalTestCaseGenerator() {
       // 🆕 处理被过滤的用例（带标记）
       const currentCounter = testCaseCounterRef.current; // 使用ref获取实时值
       const filteredCases = (result.data.filteredCases || []).map((tc: any, index: number) => {
-        const moduleName = projectInfo.moduleName || tc.module || '';
+        const moduleName = pickBestModuleName(
+          tc.module,
+          inferredModuleFromDoc,
+          projectInfo.moduleName
+        );
         const testCaseId = generateTestCaseId(moduleName, currentCounter + result.data.testCases.length + index) + '-FILTERED';
         console.log(`[生成过滤用例ID] 模块: ${moduleName}, 计数器: ${currentCounter + result.data.testCases.length + index}, ID: ${testCaseId}`);
         return {
           ...tc,
           id: testCaseId,
           caseId: testCaseId,
+          module: moduleName,
           selected: false, // 被过滤的用例默认不选中
           // 🆕 保存状态字段
           saved: false,     // 初始状态为未保存
@@ -983,7 +1015,11 @@ export function FunctionalTestCaseGenerator() {
         }));
 
         // 🆕 生成符合规范的测试用例ID（使用全局计数器确保唯一性）
-        const moduleName = projectInfo.moduleName || tc.module || '';
+        const moduleName = pickBestModuleName(
+          tc.module,
+          inferredModuleFromDoc,
+          projectInfo.moduleName
+        );
         const testCaseId = generateTestCaseId(moduleName, currentCounter + index);
         
         console.log(`[生成用例ID] 模块: ${moduleName}, 计数器: ${currentCounter + index}, ID: ${testCaseId}`);
@@ -1021,6 +1057,10 @@ export function FunctionalTestCaseGenerator() {
           section_id: tc.sectionId || '',  // 数据库字段
           section_name: tc.sectionName || '',  // 数据库字段
           sectionDescription: tc.sectionDescription || null,
+          requirementSource:
+            scenario.relatedSections?.length > 0
+              ? scenario.relatedSections.join(', ')
+              : tc.requirementSource || undefined,
           // 测试场景信息（前端显示用）
           testScenario: scenario.name,
           test_scenario: scenario.name,
@@ -1028,7 +1068,7 @@ export function FunctionalTestCaseGenerator() {
           testPointName: testPoint.testPoint,
           requirementDocId: requirementDocId,
           requirement_doc_id: requirementDocId,
-          module: projectInfo.moduleName || tc.module || '',
+          module: moduleName,
           system: projectInfo.systemName || tc.system || ''
         };
       });
@@ -1046,7 +1086,8 @@ export function FunctionalTestCaseGenerator() {
       const deduplicatedFilteredCases: any[] = [];
       const duplicateInfo: { case: any; existingCase: any; isFiltered: boolean }[] = [];
 
-      // 辅助函数：检查两个用例是否完全相同（只比较名称，移除序号前缀）
+      // 辅助函数：检查两个用例是否完全相同
+      // 仅名称相同不算重复（同名但不同测试数据/类型应保留），避免误删多条有效用例。
       const isExactDuplicate = (case1: any, case2: any): boolean => {
         if (!case1.name || !case2.name) return false;
         
@@ -1059,12 +1100,29 @@ export function FunctionalTestCaseGenerator() {
             .toLowerCase();
         };
         
+        const normalizeText = (v: unknown) =>
+          (typeof v === 'string' ? v : String(v || ''))
+            .replace(/\s+/g, ' ')
+            .trim()
+            .toLowerCase();
+
         const name1 = cleanName(case1.name);
         const name2 = cleanName(case2.name);
-        
-        console.log(`[isExactDuplicate] 比较: "${name1}" vs "${name2}" -> ${name1 === name2}`);
-        
-        return name1 === name2;
+        if (name1 !== name2) {
+          console.log(`[isExactDuplicate] 名称不同: "${name1}" vs "${name2}" -> false`);
+          return false;
+        }
+
+        const type1 = normalizeText(case1.caseType || 'full');
+        const type2 = normalizeText(case2.caseType || 'full');
+        const data1 = normalizeText(case1.testData || '');
+        const data2 = normalizeText(case2.testData || '');
+        const assertions1 = normalizeText(case1.assertions || '');
+        const assertions2 = normalizeText(case2.assertions || '');
+
+        const isDuplicate = type1 === type2 && data1 === data2 && assertions1 === assertions2;
+        console.log(`[isExactDuplicate] 名称相同，继续比对 type/data/assertions -> ${isDuplicate}`);
+        return isDuplicate;
       };
 
       // 对所有新生成的用例进行去重检查
@@ -1535,8 +1593,8 @@ export function FunctionalTestCaseGenerator() {
     }, 300);
   };
 
-  // 🆕 查看需求文档详情（弹窗显示，不跳转页面）
-  const handleViewRequirementDoc = async (docId?: number) => {
+  // 🆕 查看需求文档详情（弹窗显示，不跳转页面）；scrollToSection 为关联章节标题，打开后滚动定位
+  const handleViewRequirementDoc = async (docId?: number, scrollToSection?: string) => {
     const targetDocId = docId || requirementDocId;
     
     if (!targetDocId) {
@@ -1545,6 +1603,7 @@ export function FunctionalTestCaseGenerator() {
       return;
     }
 
+    setRequirementScrollTarget(scrollToSection?.trim() || undefined);
     setRequirementModalOpen(true);
     setRequirementLoading(true);
     setCopied(false); // 重置复制状态
@@ -1556,6 +1615,7 @@ export function FunctionalTestCaseGenerator() {
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       showToast.error('加载需求文档失败: ' + errorMessage);
       setRequirementModalOpen(false);
+      setRequirementScrollTarget(undefined);
     } finally {
       setRequirementLoading(false);
     }
@@ -1709,7 +1769,7 @@ export function FunctionalTestCaseGenerator() {
             scenarioName: scenario.name,                     // 🆕 测试场景名称
             scenarioDescription: scenario.description || null, // 🆕 测试场景描述
             system: tc.system || projectInfo.systemName || '', // 🔧 确保system字段
-            module: tc.module || projectInfo.moduleName || ''  // 🔧 确保module字段
+            module: pickBestModuleName(tc.module, projectInfo.moduleName)  // 🔧 确保module字段
           };
           
           // 如果测试用例有 testPoints，确保每个测试点都有 testPurpose
@@ -1785,7 +1845,7 @@ export function FunctionalTestCaseGenerator() {
         ...tc,
         requirementDocId: docId,
         system: tc.system || projectInfo.systemName || '',
-        module: tc.module || projectInfo.moduleName || '',
+        module: pickBestModuleName(tc.module, projectInfo.moduleName),
         // 🆕 添加项目ID和项目版本ID（用于配置变量替换）
         projectId: projectInfo.projectId,
         projectVersionId: projectInfo.projectVersionId,
@@ -1983,7 +2043,7 @@ export function FunctionalTestCaseGenerator() {
         scenarioName: tc.scenarioName || '',                                    // 🆕 测试场景名称
         scenarioDescription: tc.scenarioDescription || null,                    // 🆕 测试场景描述
         system: tc.system || projectInfo.systemName || '',                      // 🔧 确保system字段
-        module: tc.module || projectInfo.moduleName || ''                       // 🔧 确保module字段
+        module: pickBestModuleName(tc.module, projectInfo.moduleName)           // 🔧 确保module字段
       };
       
       // 如果测试用例有 testPoints，确保每个测试点都有 testPurpose
@@ -2046,7 +2106,7 @@ export function FunctionalTestCaseGenerator() {
         ...tc,
         requirementDocId: docId,
         system: tc.system || projectInfo.systemName || '',
-        module: tc.module || projectInfo.moduleName || '',
+        module: pickBestModuleName(tc.module, projectInfo.moduleName),
         // 🆕 添加项目ID和项目版本ID（用于配置变量替换）
         projectId: projectInfo.projectId,
         projectVersionId: projectInfo.projectVersionId,
@@ -3709,12 +3769,12 @@ export function FunctionalTestCaseGenerator() {
                               {scenario.relatedSections.map((section: string, idx: number) => (
                                 <Tooltip 
                                   key={`${scenario.id}-section-${idx}-${section}`}
-                                  title="点击查看需求文档"
+                                  title="点击查看需求文档并定位到该章节"
                                 >
                                   <button
                                     className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-50 text-blue-700 
                                       text-[11px] rounded border border-blue-200 hover:bg-blue-100 transition-colors whitespace-nowrap"
-                                    onClick={() => handleViewRequirementDoc(requirementDocId)}
+                                    onClick={() => handleViewRequirementDoc(requirementDocId, section)}
                                   >
                                     <span>📄</span>
                                     {section}
@@ -4937,6 +4997,7 @@ export function FunctionalTestCaseGenerator() {
         onCancel={() => {
           setRequirementModalOpen(false);
           setCurrentRequirementDoc(null);
+          setRequirementScrollTarget(undefined);
         }}
         footer={null}
         width={1200}
@@ -5023,6 +5084,7 @@ export function FunctionalTestCaseGenerator() {
                 </button>
               </div>
               <div 
+                ref={requirementScrollContainerRef}
                 className="bg-white border border-gray-200 rounded-lg p-6 flex-1 overflow-y-auto select-text"
                 style={{ minHeight: '400px', maxHeight: 'calc(95vh - 250px)' }}
               >

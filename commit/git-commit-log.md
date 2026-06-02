@@ -1,5 +1,33 @@
 ﻿# Git 提交日志
 
+## 2026-04-14
+
+fix: 测试点生成用例默认只出1条的问题修复
+- `functionalTestCaseAIService.generateTestCaseForTestPoint`：移除写死“生成1个用例”的提示，改为按 `testPoint.estimatedTestCases` 动态推荐 1-3 条（默认 2 条），避免模型被硬约束为单条输出
+- `FunctionalTestCaseGenerator`：放宽去重策略（不再仅按名称去重），改为名称一致后继续比较 `caseType + testData + assertions`，避免同名但不同数据的有效用例被误删
+
+fix: 所属模块自动识别失败（占位值覆盖 + 标题格式兼容不足）
+- `requirementDocNavigation`：新增 `normalizeModuleName` / `pickBestModuleName`，过滤 AI 占位模块（如“模块名/待补充/unknown”等）
+- `inferModuleFromRequirementDoc`：兼容非 Markdown 标题（如 `1.2 标题`），并在找不到「模块」父标题时回退到命中章节标题，提升识别命中率
+- `FunctionalTestCaseGenerator`：生成与保存链路统一使用 `pickBestModuleName` 决策模块，避免无效 `tc.module` 覆盖推断结果
+
+feat: 关联需求打开文档时滚动定位章节；生成用例按章节推断所属模块
+- 新增 `src/utils/requirementDocNavigation.ts`：`scrollToRequirementSectionInContainer` 在已渲染 HTML 内匹配标题并滚动；`inferModuleFromRequirementDoc` 从 Markdown 正文向上查找含「模块」的标题作为模块名
+- `TestCaseDetailModal`：点击「关联需求」传入章节标签，需求弹窗加载后滚动到对应标题
+- `FunctionalTestCaseGenerator`：场景下关联需求标签点击传入 `section` 以滚动；生成测试用例时优先 AI/推断模块与项目模块填充 `module`，并写入 `requirementSource` 便于详情展示
+
+fix: 详情弹窗保存模块后仍显示需求文档旧模块
+- `TestCaseDetailModal`：`normalizedTestCase.module` 改为「用例上非空 `module` 优先，否则再回退 `docModule`」，避免 `docModule || testCase.module` 始终盖住已保存值
+
+feat: 测试用例详情弹窗「所属模块」可编辑并保存
+- `TestCaseDetailModal`：编辑模式下展示输入框，`onSave` 仍传递完整 `editedCase`（含 `module`）；进入编辑/取消时合并需求文档模块 `docModule`，与只读展示一致
+- `FunctionalTestCaseCreate`：详情保存时将 `module` 写回页面 `formData.module`（该页模块为表单级字段）
+
+fix: 功能测试页 UI 自动化执行完成后同步写入功能执行结果
+- `FunctionalTestCases`：UI 自动化执行回调新增结果落库逻辑，收到 `test_complete` / `test_error` 后调用 `functionalTestCaseService.saveExecutionResult`，将执行状态同步到 `functional_test_executions`
+- 执行结果映射：根据测试运行状态与失败步数将结果映射为 `pass/fail/block`，并写入步骤统计、执行时长、引擎与 runId 元数据，保障列表“执行结果”可正确展示最新状态
+- 稳定性修复：执行开始时缓存 `executingCase`，避免异步回调读取到已清空状态；增加终态事件幂等保护，避免重复写库
+
 ## 2026-04-10
 
 refactor(openclaw): 全面精简 workspace MD 文件，消除 prompt 膨胀与规则重复

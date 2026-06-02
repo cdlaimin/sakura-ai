@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Modal } from '../ui/modal';
 import { Button } from '../ui/button';
 import { clsx } from 'clsx';
@@ -9,8 +9,21 @@ import { marked } from 'marked';
 import { showToast } from '../../utils/toast';
 import { TestStepsEditor, parseStepsFromString, formatStepsToString, TestStep } from '../test-case/TestStepsEditor';
 import { getCaseTypeInfo, type CaseType } from '../../utils/caseTypeHelper';
+import { scrollToRequirementSectionInContainer } from '../../utils/requirementDocNavigation';
 
 const { TextArea } = Input;
+
+/** 从用例字段解析用于滚动定位的关联章节标题（取 requirementSource 首段或 sectionId+sectionName） */
+function getLinkedRequirementSectionLabel(c: TestCase): string | undefined {
+  if (c.requirementSource) {
+    const first = c.requirementSource.split(',')[0]?.trim();
+    if (first) return first;
+  }
+  if (c.sectionId && c.sectionName) return `${c.sectionId} ${c.sectionName}`.trim();
+  if (c.sectionId) return String(c.sectionId);
+  if (c.sectionName) return c.sectionName;
+  return undefined;
+}
 
 // 定义测试用例类型
 interface TestCase {
@@ -72,6 +85,9 @@ export function TestCaseDetailModal({
   
   // 🆕 从需求文档获取模块信息
   const [docModule, setDocModule] = useState<string | undefined>(undefined);
+  /** 打开需求弹窗后滚动到该章节标题 */
+  const [requirementScrollTarget, setRequirementScrollTarget] = useState<string | undefined>(undefined);
+  const requirementContentScrollRef = useRef<HTMLDivElement>(null);
   
   // 🆕 复制状态
   const [copied, setCopied] = useState(false);
@@ -159,6 +175,17 @@ export function TestCaseDetailModal({
     };
   }, [testCase]);
 
+  // 需求文档弹窗加载完成后滚动到关联章节
+  useEffect(() => {
+    if (!requirementModalOpen || requirementLoading || !currentRequirementDoc?.content) return;
+    if (!requirementScrollTarget?.trim()) return;
+    const label = requirementScrollTarget.trim();
+    const t = window.setTimeout(() => {
+      scrollToRequirementSectionInContainer(requirementContentScrollRef.current, label);
+    }, 150);
+    return () => clearTimeout(t);
+  }, [requirementModalOpen, requirementLoading, currentRequirementDoc?.content, requirementScrollTarget]);
+
   if (!testCase) return null;
 
   const hasMultipleCases = allCases && allCases.length > 1;
@@ -177,6 +204,14 @@ export function TestCaseDetailModal({
   
   // 统一获取需求文档ID（优先使用requirementDocId，兼容requirement_doc_id）
   const docId = testCaseWithDb.requirementDocId || testCaseWithDb.requirement_doc_id;
+
+  // 用例上已保存的模块优先于需求文档拉取的模块，避免保存后仍显示文档旧值
+  const caseModuleTrimmed =
+    typeof testCase.module === 'string' ? testCase.module.trim() : '';
+  const resolvedModule =
+    caseModuleTrimmed !== ''
+      ? caseModuleTrimmed
+      : (docModule || testCase.module || '');
   
   const normalizedTestCase: TestCase & TestCaseWithDbFields = {
     ...testCase,
@@ -186,7 +221,7 @@ export function TestCaseDetailModal({
     testScenario: testCase.testScenario || testCaseWithDb.test_scenario,
     requirementDocId: docId,  // 🆕 统一使用驼峰命名
     requirement_doc_id: docId,  // 🆕 保留下划线命名以兼容
-    module: docModule || testCase.module,  // 🆕 优先使用需求文档的模块信息
+    module: resolvedModule,
   };
   
   const currentCase = isEditing ? editedCase : normalizedTestCase;
@@ -243,7 +278,10 @@ export function TestCaseDetailModal({
   };
 
   const handleCancel = () => {
-    setEditedCase({ ...testCase });
+    setEditedCase({
+      ...testCase,
+      module: resolvedModule
+    });
     setIsEditing(false);
   };
 
@@ -289,8 +327,8 @@ export function TestCaseDetailModal({
     updateField('assertions', assertionsStr);
   };
 
-  // 🆕 处理查看需求文档详情
-  const handleViewRequirement = async () => {
+  // 🆕 处理查看需求文档详情（可选 scrollToSection：打开后滚动到对应标题）
+  const handleViewRequirement = async (scrollToSection?: string) => {
     const caseWithDocId = currentCase as TestCase & { requirement_doc_id?: number; requirementDocId?: number };
     const requirementDocId = caseWithDocId.requirement_doc_id || caseWithDocId.requirementDocId;
     
@@ -299,6 +337,7 @@ export function TestCaseDetailModal({
       return;
     }
 
+    setRequirementScrollTarget(scrollToSection?.trim() || undefined);
     setRequirementModalOpen(true);
     setRequirementLoading(true);
     setCopied(false); // 重置复制状态
@@ -310,6 +349,7 @@ export function TestCaseDetailModal({
       const errorMessage = error instanceof Error ? error.message : '未知错误';
       showToast.error('加载需求文档失败: ' + errorMessage);
       setRequirementModalOpen(false);
+      setRequirementScrollTarget(undefined);
     } finally {
       setRequirementLoading(false);
     }
@@ -459,7 +499,10 @@ export function TestCaseDetailModal({
                   variant="outline"
                   onClick={() => {
                     if (testCase) {
-                      setEditedCase({ ...testCase });
+                      setEditedCase({
+                        ...testCase,
+                        module: resolvedModule
+                      });
                       setIsEditing(true);
                     }
                   }}
@@ -578,8 +621,8 @@ export function TestCaseDetailModal({
           {/* 系统信息、关联需求、关联场景和关联测试点 - 同一行显示 */}
           <div className="flex flex-wrap items-start gap-3 pt-4 border-t border-purple-200">
             {/* 所属项目 */}
-            <div className="flex-shrink-0 min-w-[140px]">
-              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">所属项目</div>
+            <div className="flex-shrink-0 min-w-[200px]">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">所属项目</div>
               {/* {isEditing ? (
                 <Input
                   value={editedCase?.system || ''}
@@ -593,18 +636,17 @@ export function TestCaseDetailModal({
             </div>
             
             {/* 所属模块 */}
-            <div className="flex-shrink-0 min-w-[100px]">
-              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">所属模块</div>
-              {/* {isEditing ? (
+            <div className="flex-shrink-0 min-w-[120px]">
+              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">所属模块</div>
+              {isEditing ? (
                 <Input
-                  value={editedCase?.module || ''}
+                  value={editedCase?.module ?? ''}
                   onChange={(e) => updateField('module', e.target.value)}
                   placeholder="模块名称"
                 />
               ) : (
                 <div className="text-sm font-medium text-gray-900">{currentCase.module || '未指定'}</div>
-              )} */}
-              <div className="text-sm font-medium text-gray-900">{currentCase.module || '未指定'}</div>
+              )}
             </div>
 
             {/* 🆕 关联需求 */}
@@ -613,8 +655,8 @@ export function TestCaseDetailModal({
                 <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">关联需求</div>
                 <button
                   className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 text-xs font-medium rounded-lg border border-blue-200 hover:bg-blue-100 transition-colors cursor-pointer whitespace-nowrap"
-                  onClick={handleViewRequirement}
-                  title="点击查看需求文档"
+                  onClick={() => void handleViewRequirement(getLinkedRequirementSectionLabel(currentCase))}
+                  title="点击查看需求文档并定位到该章节"
                 >
                   <FileText className="w-3.5 h-3.5 flex-shrink-0" />
                   <span className="max-w-[200px] truncate">
@@ -724,7 +766,7 @@ export function TestCaseDetailModal({
                 placeholder="测试数据（如：用户名：admin，密码：123456）"
               />
             ) : (
-              <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">
+              <div className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap break-all">
                 {currentCase.testData ? (
                   <p>{currentCase.testData}</p>
                 ) : (
@@ -774,6 +816,7 @@ export function TestCaseDetailModal({
       onCancel={() => {
         setRequirementModalOpen(false);
         setCurrentRequirementDoc(null);
+        setRequirementScrollTarget(undefined);
       }}
       footer={null}
       width={1300}
@@ -862,6 +905,7 @@ export function TestCaseDetailModal({
               </button>
             </div>
             <div 
+              ref={requirementContentScrollRef}
               className="bg-white border border-gray-200 rounded-lg p-6 flex-1 overflow-y-auto select-text"
               style={{ minHeight: '400px', maxHeight: 'calc(95vh - 250px)' }}
             >

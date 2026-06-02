@@ -211,7 +211,9 @@ export function TestStepsEditor({ steps, isEditing, onChange }: TestStepsEditorP
               {/* 操作步骤 */}
               <div className={clsx("min-w-0", allExpectedSame ? "flex-1" : "flex-1")}>
                 <div className="text-xs text-gray-500 mb-1">操作步骤</div>
-                <div className="text-sm text-gray-900">{step.operation || '未填写'}</div>
+                <div className="text-sm text-gray-900 whitespace-pre-wrap break-all">
+                  {step.operation || '未填写'}
+                </div>
               </div>
 
               {/* 预期结果 - 如果所有预期都相同，则不显示 */}

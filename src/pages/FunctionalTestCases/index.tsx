@@ -695,11 +695,12 @@ export function FunctionalTestCases() {
     const handleConfirmRunUITest = async () => {
         if (!pendingTestCase) return;
 
+        const executingCase = pendingTestCase;
         setRunningTestId(pendingTestCase.id);
         setShowExecutionConfig(false);
         
         try {
-            console.log(`🚀 开始执行UI自动化测试: ${pendingTestCase.name}`);
+            console.log(`🚀 开始执行UI自动化测试: ${executingCase.name}`);
             console.log(`   执行引擎: ${executionConfig.executionEngine}`);
             console.log(`   Trace录制: ${executionConfig.enableTrace ? '启用' : '禁用'}`);
             console.log(`   Video录制: ${executionConfig.enableVideo ? '启用' : '禁用'}`);
@@ -707,15 +708,15 @@ export function FunctionalTestCases() {
             try {
                 // 🔥 步骤1: 将功能用例信息转换为标准测试用例格式（使用与导入功能用例相同的转换逻辑）
                 // 🔥 调试日志：查看功能用例的实际数据结构
-                console.log('🔍 [UI自动化测试] 原始数据:', pendingTestCase);
-                console.log('  - name:', pendingTestCase.name);
-                console.log('  - steps:', pendingTestCase.steps);
-                console.log('  - test_point_steps:', pendingTestCase.test_point_steps);
-                console.log('  - expected_result:', pendingTestCase.expected_result);
-                console.log('  - test_point_expected_result:', pendingTestCase.test_point_expected_result);
-                console.log('  - assertions:', pendingTestCase.assertions);
-                console.log('  - project_version:', pendingTestCase.project_version);
-                console.log('  - project_version_id:', pendingTestCase.project_version_id);
+                console.log('🔍 [UI自动化测试] 原始数据:', executingCase);
+                console.log('  - name:', executingCase.name);
+                console.log('  - steps:', executingCase.steps);
+                console.log('  - test_point_steps:', executingCase.test_point_steps);
+                console.log('  - expected_result:', executingCase.expected_result);
+                console.log('  - test_point_expected_result:', executingCase.test_point_expected_result);
+                console.log('  - assertions:', executingCase.assertions);
+                console.log('  - project_version:', executingCase.project_version);
+                console.log('  - project_version_id:', executingCase.project_version_id);
 
                 // 优先级映射
                 const priorityMap: { [key: string]: 'high' | 'medium' | 'low' } = {
@@ -740,8 +741,8 @@ export function FunctionalTestCases() {
 
                 // 🔥 处理步骤和预期结果：将每个步骤与对应的预期结果配对
                 // 尝试多种可能的字段名
-                const rawSteps = pendingTestCase.test_point_steps || pendingTestCase.steps || '';
-                const rawExpectedResults = pendingTestCase.test_point_expected_result || pendingTestCase.expected_result || pendingTestCase.assertions || '';
+                const rawSteps = executingCase.test_point_steps || executingCase.steps || '';
+                const rawExpectedResults = executingCase.test_point_expected_result || executingCase.expected_result || executingCase.assertions || '';
                 
                 console.log('🔍 [UI自动化测试] 提取结果:', {
                     rawSteps,
@@ -808,30 +809,30 @@ export function FunctionalTestCases() {
                 const tagsList: string[] = [];
                 
                 // 先添加用例类型标签（中文）
-                if (pendingTestCase.case_type) {
-                    const caseTypeInfo = getCaseTypeLabel(pendingTestCase.case_type);
+                if (executingCase.case_type) {
+                    const caseTypeInfo = getCaseTypeLabel(executingCase.case_type);
                     tagsList.push(caseTypeInfo); // 使用中文标签（如"冒烟测试"、"全量测试"）
                 }
 
                 // 🔥 获取版本信息（与导入功能用例逻辑一致）
-                const projectVersion = pendingTestCase.project_version 
-                    ? (pendingTestCase.project_version.version_name || pendingTestCase.project_version.version_code || String(pendingTestCase.project_version_id))
+                const projectVersion = executingCase.project_version 
+                    ? (executingCase.project_version.version_name || executingCase.project_version.version_code || String(executingCase.project_version_id))
                     : undefined;
 
                 // 创建唯一标识符（用于name前缀）
-                const uniqueId = `TC_${String(pendingTestCase.id).padStart(5, '0')}`;
+                const uniqueId = `TC_${String(executingCase.id).padStart(5, '0')}`;
                 
                 const testCaseData: any = {
-                    name: `[${uniqueId}] ${pendingTestCase.name || pendingTestCase.test_point_name || '未命名测试'}`,
-                    preconditions: pendingTestCase.preconditions || '', // 🔥 前置条件
-                    testData: pendingTestCase.testData || pendingTestCase.test_data || '', // 🔥 测试数据
+                    name: `[${uniqueId}] ${executingCase.name || executingCase.test_point_name || '未命名测试'}`,
+                    preconditions: executingCase.preconditions || '', // 🔥 前置条件
+                    testData: executingCase.testData || executingCase.test_data || '', // 🔥 测试数据
                     steps: formattedSteps,
                     assertions: assertions,
-                    priority: priorityMap[pendingTestCase.priority || pendingTestCase.test_point_risk_level || ''] || 'medium',
-                    status: statusMap[pendingTestCase.status || ''] || 'active',
+                    priority: priorityMap[executingCase.priority || executingCase.test_point_risk_level || ''] || 'medium',
+                    status: statusMap[executingCase.status || ''] || 'active',
                     tags: tagsList,
-                    system: pendingTestCase.system || '',
-                    module: pendingTestCase.module || '',
+                    system: executingCase.system || '',
+                    module: executingCase.module || '',
                     projectVersion: projectVersion, // 🔥 新增：所属版本（与导入功能用例逻辑一致）
                     department: user?.project || undefined,
                     author: user?.accountName || user?.username || user?.email || '未知用户',
@@ -841,7 +842,7 @@ export function FunctionalTestCases() {
                 };
 
                 console.log('📋 [UI自动化测试] 步骤1 - 转换功能用例数据:', {
-                    originalId: pendingTestCase.id,
+                    originalId: executingCase.id,
                     uniqueId,
                     name: testCaseData.name,
                     stepsLength: testCaseData.steps.length,
@@ -894,11 +895,13 @@ export function FunctionalTestCases() {
 
                 // 🔥 步骤3: 启动WebSocket监听器
                 const listenerId = `test-run-${temporaryTestCaseId}`;
+                let hasHandledFinalEvent = false;
                 
                 testService.addMessageListener(listenerId, (message) => {
                     console.log(`📣 [FunctionalTestCase] 收到WebSocket消息:`, message);
                     
-                    if (message.type === 'test_complete') {
+                    if (message.type === 'test_complete' && !hasHandledFinalEvent) {
+                        hasHandledFinalEvent = true;
                         console.log(`✅ 收到测试完成通知，重置状态:`, message);
                         setRunningTestId(null);
                         testService.removeMessageListener(listenerId);
@@ -911,14 +914,107 @@ export function FunctionalTestCases() {
                         } else {
                             showToast.success(`测试执行成功`);
                         }
-                        
-                        loadData();
-                    } else if (message.type === 'test_error') {
+
+                        // 将UI自动化执行结果同步回功能测试执行记录
+                        const syncExecutionResult = async () => {
+                            try {
+                                const runId = message.runId;
+                                const runResponse = runId ? await testService.getTestRun(runId) : null;
+                                const runStatus = runResponse?.status || status;
+                                const failedSteps = runResponse?.failedSteps || 0;
+                                const totalSteps = runResponse?.totalSteps || 0;
+                                const completedSteps = runResponse?.completedSteps || 0;
+                                const passedSteps = runResponse?.passedSteps || 0;
+                                const durationFromRun = typeof runResponse?.duration === 'string'
+                                    ? Number.parseFloat(runResponse.duration) * 1000
+                                    : 0;
+                                const finalDurationMs = Number.isFinite(durationFromRun) && durationFromRun > 0
+                                    ? Math.round(durationFromRun)
+                                    : 0;
+
+                                let finalResult: 'pass' | 'fail' | 'block' = 'pass';
+                                if (runStatus === 'failed' || runStatus === 'error' || failedSteps > 0) {
+                                    finalResult = 'fail';
+                                } else if (runStatus === 'cancelled') {
+                                    finalResult = 'block';
+                                }
+
+                                const actualResult = finalResult === 'pass'
+                                    ? `UI自动化执行成功，共${totalSteps || 0}步，已完成${completedSteps || 0}步。`
+                                    : finalResult === 'block'
+                                        ? 'UI自动化执行被取消，结果标记为阻塞。'
+                                        : `UI自动化执行失败，共${totalSteps || 0}步，失败${failedSteps || 0}步。`;
+
+                                await functionalTestCaseService.saveExecutionResult(Number(executingCase.id), {
+                                    testCaseName: executingCase.name || `功能测试用例-${executingCase.id}`,
+                                    finalResult,
+                                    actualResult,
+                                    comments: runResponse?.error || `UI自动化执行引擎: ${executionConfig.executionEngine}`,
+                                    durationMs: finalDurationMs,
+                                    totalSteps,
+                                    completedSteps,
+                                    passedSteps,
+                                    failedSteps,
+                                    blockedSteps: finalResult === 'block' ? 1 : 0,
+                                    metadata: {
+                                        source: 'ui_auto_execution',
+                                        runId: runResponse?.id || message.runId,
+                                        executionEngine: executionConfig.executionEngine,
+                                        system: executingCase.system,
+                                        module: executingCase.module,
+                                        scenario_name: executingCase.scenario_name,
+                                        test_point_name: executingCase.test_point_name
+                                    }
+                                });
+                                console.log(`✅ [UI自动化测试] 功能用例执行结果已同步到数据库: caseId=${executingCase.id}`);
+                            } catch (syncError) {
+                                console.error('❌ [UI自动化测试] 同步功能用例执行结果失败:', syncError);
+                                showToast.warning('UI自动化已完成，但执行结果写入功能用例记录失败，请稍后重试');
+                            } finally {
+                                loadData();
+                            }
+                        };
+
+                        syncExecutionResult();
+                    } else if (message.type === 'test_error' && !hasHandledFinalEvent) {
+                        hasHandledFinalEvent = true;
                         console.log(`❌ 收到测试错误通知，重置状态:`, message);
                         setRunningTestId(null);
                         testService.removeMessageListener(listenerId);
-                        showToast.error(`❌ 测试执行出错: ${pendingTestCase.name}`);
-                        loadData();
+
+                        const syncFailedExecution = async () => {
+                            try {
+                                await functionalTestCaseService.saveExecutionResult(Number(executingCase.id), {
+                                    testCaseName: executingCase.name || `功能测试用例-${executingCase.id}`,
+                                    finalResult: 'fail',
+                                    actualResult: 'UI自动化执行异常终止，请查看运行日志定位原因。',
+                                    comments: message.data?.error ? String(message.data.error) : 'WebSocket返回test_error事件',
+                                    durationMs: 0,
+                                    totalSteps: 0,
+                                    completedSteps: 0,
+                                    passedSteps: 0,
+                                    failedSteps: 1,
+                                    blockedSteps: 0,
+                                    metadata: {
+                                        source: 'ui_auto_execution',
+                                        runId: message.runId,
+                                        executionEngine: executionConfig.executionEngine,
+                                        system: executingCase.system,
+                                        module: executingCase.module,
+                                        scenario_name: executingCase.scenario_name,
+                                        test_point_name: executingCase.test_point_name
+                                    }
+                                });
+                                console.log(`✅ [UI自动化测试] 异常结果已同步到数据库: caseId=${executingCase.id}`);
+                            } catch (syncError) {
+                                console.error('❌ [UI自动化测试] 同步异常执行结果失败:', syncError);
+                            } finally {
+                                loadData();
+                            }
+                        };
+
+                        syncFailedExecution();
+                        showToast.error(`❌ 测试执行出错: ${executingCase.name}`);
                     }
                 });
                 
@@ -941,7 +1037,7 @@ export function FunctionalTestCases() {
                 navigate(`/test-runs/${response.runId}/detail`, {
                   state: { 
                     from: '/functional-test-cases',
-                    caseName: pendingTestCase.name 
+                    caseName: executingCase.name 
                   }
                 });
             } catch (error: any) {
