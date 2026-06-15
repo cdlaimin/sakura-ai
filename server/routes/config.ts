@@ -436,19 +436,7 @@ router.post('/test-connection', async (req, res) => {
     const apiFormat = modelInfo.apiFormat || 'openai';
     const isOllamaFormat = apiFormat === 'ollama';
 
-    // 🔥 获取模型的最大 tokens 限制
-    const getMaxTokensLimit = (baseUrl: string): number => {
-      if (baseUrl.includes('dashscope.aliyuncs.com')) return 8192;
-      if (baseUrl.includes('api.deepseek.com')) return 8192;
-      if (baseUrl.includes('open.bigmodel.cn')) return 4096;
-      if (baseUrl.includes('aip.baidubce.com')) return 2048;
-      if (baseUrl.includes('api.moonshot.cn')) return 8192;
-      if (baseUrl.includes('zenmux.ai')) return 8192;
-      return 8192;
-    };
-
-    const maxTokensLimit = getMaxTokensLimit(baseUrl);
-    const finalMaxTokens = Math.min(10, maxTokensLimit); // 测试只需要很少的tokens
+    const finalMaxTokens = 10; // 测试连接只需要很少的 tokens
 
     // 🔥 根据 API 格式确定端点和请求体
     let apiEndpoint: string;

@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { Check, Star, Eye, List, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown } from 'lucide-react';
+import { useState, type CSSProperties } from 'react';
+import { AlertTriangle, Check, Star, Eye, List, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown, FileText } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Tooltip, Dropdown } from 'antd';
-import { getCaseTypeInfo } from '../../utils/caseTypeHelper';
+import { getCaseTypeInfo, getAllCaseTypes, getCaseTypeSortOrder } from '../../utils/caseTypeHelper';
 import { countSteps } from '../../utils/stepsCounter';
 
 interface DraftCaseTableViewProps {
@@ -29,6 +29,17 @@ const priorityConfig: Record<string, { label: string; color: string; dot: string
   high: { label: '高', color: 'text-orange-700', dot: 'bg-orange-500' },
   medium: { label: '中', color: 'text-blue-700', dot: 'bg-blue-500' },
   low: { label: '低', color: 'text-gray-600', dot: 'bg-gray-400' },
+};
+
+const adaptiveTooltipStyles = {
+  body: {
+    padding: '0.5rem',
+    maxWidth: 'min(720px, calc(100vw - 80px))',
+    width: 'max-content',
+    whiteSpace: 'normal',
+    wordBreak: 'break-word',
+    fontSize: '0.875rem',
+  } satisfies CSSProperties,
 };
 
 /**
@@ -75,9 +86,8 @@ export function DraftCaseTableView({
       if (!sortBy) return 0;
       
       if (sortBy === 'type') {
-        const typeOrder = { 'SMOKE': 0, 'FULL': 1, 'ABNORMAL': 2, 'BOUNDARY': 3 };
-        const aOrder = typeOrder[a.caseType as keyof typeof typeOrder] ?? 4;
-        const bOrder = typeOrder[b.caseType as keyof typeof typeOrder] ?? 4;
+        const aOrder = getCaseTypeSortOrder(a.caseType);
+        const bOrder = getCaseTypeSortOrder(b.caseType);
         return sortOrder === 'asc' ? aOrder - bOrder : bOrder - aOrder;
       }
       
@@ -123,65 +133,23 @@ export function DraftCaseTableView({
     setSortOrder('asc');
   };
 
-  // 🆕 类型筛选菜单
+  // 🆕 类型筛选菜单（九类，与 TestCases 一致）
   const caseTypeMenu = {
     items: [
-      {
-        key: 'SMOKE',
+      ...getAllCaseTypes().map(({ value, label }) => ({
+        key: value,
         label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('SMOKE')}>
+          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter(value)}>
             <input
               type="checkbox"
-              checked={caseTypeFilter.includes('SMOKE')}
+              checked={caseTypeFilter.includes(value)}
               onChange={() => {}}
               className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
             />
-            <span>🔥 冒烟用例</span>
+            <span>{label}用例</span>
           </div>
         ),
-      },
-      {
-        key: 'FULL',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('FULL')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('FULL')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>✅ 全量用例</span>
-          </div>
-        ),
-      },
-      {
-        key: 'ABNORMAL',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('ABNORMAL')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('ABNORMAL')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>⚠️ 异常用例</span>
-          </div>
-        ),
-      },
-      {
-        key: 'BOUNDARY',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('BOUNDARY')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('BOUNDARY')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>🎯 边界用例</span>
-          </div>
-        ),
-      },
+      })),
       { type: 'divider' },
       {
         key: 'reset',
@@ -372,9 +340,14 @@ export function DraftCaseTableView({
       <div className="divide-y divide-gray-100">
         {filteredAndSortedCases.map((tc, index) => {
           const saved = tc.saved && !tc.modified;
+          const isFiltered = Boolean(tc.isFiltered);
           const selected = (!saved && selectedTestCases[tc.id]) || false;
           const priority = priorityConfig[tc.priority] || priorityConfig.medium;
           const typeInfo = getCaseTypeInfo(tc.caseType);
+          const requirementRefs = Array.from(new Set([
+            ...((tc.coveredRequirementRefs || []) as string[]),
+            ...(((tc.testPoints || []) as any[]).flatMap((tp: any) => tp.coveredRequirementRefs || []) as string[])
+          ]));
 
           return (
             <div
@@ -383,6 +356,7 @@ export function DraftCaseTableView({
                 "flex items-center gap-3 px-4 py-3.5 transition-all cursor-pointer group text-xs",
                 "hover:bg-gradient-to-r hover:from-purple-50/50 hover:to-blue-50/30 hover:shadow-sm",
                 saved ? "bg-gradient-to-r from-green-50/30 to-emerald-50/20" : 
+                isFiltered ? "bg-gradient-to-r from-orange-50/50 to-white" :
                 selected ? "bg-gradient-to-r from-purple-50/60 to-blue-50/40 shadow-sm" : 
                 "bg-white"
               )}
@@ -430,9 +404,35 @@ export function DraftCaseTableView({
 
               {/* 用例名称 */}
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-gray-900 truncate">{tc.name || '未命名用例'}</p>
+                <Tooltip styles={adaptiveTooltipStyles} title={tc.name || '未命名用例'}>
+                  <p className="max-w-full text-sm font-semibold text-gray-900 truncate">{tc.name || '未命名用例'}</p>
+                </Tooltip>
                 {tc.description && (
-                  <p className="text-xs text-gray-500 truncate mt-0.5">{tc.description}</p>
+                  <Tooltip styles={adaptiveTooltipStyles} title={tc.description}>
+                    <p className="max-w-full text-xs text-gray-500 truncate mt-0.5">{tc.description}</p>
+                  </Tooltip>
+                )}
+                {isFiltered && tc.filterReason && (
+                  <Tooltip styles={adaptiveTooltipStyles} title={`过滤原因：${tc.filterReason}`}>
+                    <p className="inline-flex max-w-full items-center gap-1 text-[10px] text-orange-700 bg-orange-100 border border-orange-200 rounded px-1.5 py-0.5 mt-1">
+                      <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                      <span className="min-w-0 truncate">过滤原因：{tc.filterReason}</span>
+                    </p>
+                  </Tooltip>
+                )}
+                {requirementRefs.length > 0 && (
+                  <Tooltip styles={adaptiveTooltipStyles} title={`关联需求：${requirementRefs.join('、')}`}>
+                    <p className="inline-flex max-w-full items-center gap-1 flex-wrap text-[10px] text-blue-700 mt-1">
+                      <FileText className="w-3 h-3 flex-shrink-0" />
+                      <span className="text-gray-500 flex-shrink-0">关联需求:</span>
+                      {requirementRefs.slice(0, 5).map(ref => (
+                        <span key={ref} className="max-w-[120px] truncate px-1 py-0.5 bg-blue-50 border border-blue-200 rounded">
+                          {ref}
+                        </span>
+                      ))}
+                      {requirementRefs.length > 5 && <span className="text-gray-500 flex-shrink-0">+{requirementRefs.length - 5}</span>}
+                    </p>
+                  </Tooltip>
                 )}
               </div>
 
@@ -442,7 +442,7 @@ export function DraftCaseTableView({
                   "inline-flex items-center gap-0.5 px-2 py-1 rounded-md text-[10px] font-bold border shadow-sm",
                   typeInfo.tailwindBg, typeInfo.tailwindText, typeInfo.tailwindBorder
                 )}>
-                  {typeInfo.emoji}{typeInfo.label}
+                  {typeInfo.emoji} {typeInfo.label}
                 </span>
               </div>
 
@@ -468,6 +468,10 @@ export function DraftCaseTableView({
               <div className="w-[70px] flex justify-center">
                 {saved ? (
                   <span className="text-[10px] font-bold text-green-700 bg-green-100 px-2 py-1 rounded-md shadow-sm border border-green-200">已保存</span>
+                ) : isFiltered ? (
+                  <Tooltip title={tc.filterReason || '数据一致性验证失败'}>
+                    <span className="text-[10px] font-bold text-orange-700 bg-orange-100 px-2 py-1 rounded-md shadow-sm border border-orange-200 cursor-help">待确认</span>
+                  </Tooltip>
                 ) : tc.saved && tc.modified ? (
                   <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-1 rounded-md shadow-sm border border-amber-200">已修改</span>
                 ) : (

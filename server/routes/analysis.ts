@@ -65,7 +65,7 @@ export function createAnalysisRoutes(): Router {
    */
   router.post('/generate', async (req: Request, res: Response) => {
     try {
-      const { text, model } = req.body;
+      const { text, model, sourceTitle } = req.body;
 
       if (!text || text.trim().length === 0) {
         return res.status(400).json({ success: false, error: '请提供需求文本内容' });
@@ -80,6 +80,7 @@ export function createAnalysisRoutes(): Router {
       }
       const { content, inputTruncated } = await service.generateRequirementDoc(text, model, {
         systemPrompt: REQUIREMENT_ANALYSIS_SYSTEM_PROMPT_V2,
+        sourceTitle,
         logScene: 'requirementAnalysisPage',
       });
 
@@ -99,7 +100,7 @@ export function createAnalysisRoutes(): Router {
    */
   router.post('/generate-stream', async (req: Request, res: Response) => {
     try {
-      const { text, model } = req.body;
+      const { text, model, sourceTitle } = req.body;
       if (!text || text.trim().length === 0) {
         return res.status(400).json({ success: false, error: '请提供需求文本内容' });
       }
@@ -114,6 +115,7 @@ export function createAnalysisRoutes(): Router {
 
       const { content, inputTruncated } = await service.generateRequirementDoc(text, model, {
         systemPrompt: REQUIREMENT_ANALYSIS_SYSTEM_PROMPT_V2,
+        sourceTitle,
         logScene: 'requirementAnalysisPage',
         onProgress: (event) => writeNdjson(res, { type: 'progress', ...event }),
       });

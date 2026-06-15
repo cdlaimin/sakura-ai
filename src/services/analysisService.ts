@@ -50,12 +50,13 @@ class AnalysisServiceClass {
 
   async generateRequirement(
     text: string,
-    model?: string
+    model?: string,
+    sourceTitle?: string
   ): Promise<{ content: string; inputTruncated?: boolean }> {
     const response = await fetch(`${API_BASE_URL}/analysis/generate`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ text, model })
+      body: JSON.stringify({ text, model, sourceTitle })
     });
     const result = await handleResponse(response);
     return {
@@ -68,6 +69,7 @@ class AnalysisServiceClass {
     text: string,
     options?: {
       model?: string;
+      sourceTitle?: string;
       onProgress?: (event: { phase?: string; current?: number; total?: number; message?: string }) => void;
       signal?: AbortSignal;
     }
@@ -75,7 +77,7 @@ class AnalysisServiceClass {
     const response = await fetch(`${API_BASE_URL}/analysis/generate-stream`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ text, model: options?.model }),
+      body: JSON.stringify({ text, model: options?.model, sourceTitle: options?.sourceTitle }),
       signal: options?.signal
     });
     if (!response.ok) {
@@ -83,7 +85,7 @@ class AnalysisServiceClass {
       throw new Error(errorData.error || `请求失败: ${response.status}`);
     }
     if (!response.body) {
-      return this.generateRequirement(text, options?.model);
+      return this.generateRequirement(text, options?.model, options?.sourceTitle);
     }
 
     const reader = response.body.getReader();

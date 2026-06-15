@@ -18,7 +18,7 @@ import { showToast } from '../utils/toast';
 import { readFileContent, type FileReadResult } from '../utils/fileReader';
 import { sortFilesByAxurePriority } from '../utils/axureExportPrioritize';
 import { ProgressIndicator } from '../components/ai-generator/ProgressIndicator';
-import { MAX_FILE_SIZE, MAX_FILES } from '../config/upload';
+import { MAX_FILE_SIZE, MAX_FILES, getMaxFileSizeForName } from '../config/upload';
 import { MultiFileUpload } from '../components/ai-generator/MultiFileUpload';
 import { AIThinking } from '../components/ai-generator/AIThinking';
 
@@ -210,8 +210,9 @@ export function RequirementAnalysis() {
   };
 
   const handleFileUpload = async (file: File) => {
-    if (file.size > MAX_FILE_SIZE) {
-      showToast.error('文件大小不能超过 10MB');
+    const sizeLimit = getMaxFileSizeForName(file.name);
+    if (file.size > sizeLimit) {
+      showToast.error(`文件大小不能超过 ${Math.round(sizeLimit / 1024 / 1024)}MB`);
       return;
     }
     try {
@@ -238,8 +239,9 @@ export function RequirementAnalysis() {
     const sorted = sortFilesByAxurePriority([...mainFiles]);
 
     for (const file of sorted) {
-      if (file.size > MAX_FILE_SIZE) {
-        showToast.error(`文件过大（超过 10MB）：${file.name}`);
+      const sizeLimit = getMaxFileSizeForName(file.name);
+      if (file.size > sizeLimit) {
+        showToast.error(`文件过大（超过 ${Math.round(sizeLimit / 1024 / 1024)}MB）：${file.name}`);
         return;
       }
     }
@@ -264,7 +266,7 @@ export function RequirementAnalysis() {
         }
       }
       setInputText(parts.join('\n'));
-      setUploadedFileName(`合并 ${sorted.length} 个文件`);
+      setUploadedFileName(sorted[0]?.name || `合并 ${sorted.length} 个文件`);
 
       if (allWarnings.length > 0) {
         showToast.warning(allWarnings[0]);
@@ -401,6 +403,7 @@ export function RequirementAnalysis() {
     generateAbortRef.current = new AbortController();
     try {
       const { content, inputTruncated } = await analysisService.generateRequirementStream(inputText, {
+        sourceTitle: uploadedFileName || filePreviewResult?.fileName,
         onProgress: (event) => setGenerateProgress(event),
         signal: generateAbortRef.current.signal
       });
@@ -517,7 +520,9 @@ export function RequirementAnalysis() {
       {/* 页面标题 */}
       <div>
         <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">需求分析</h1>
-        <p className="text-sm text-[var(--color-text-secondary)] mt-1">通过 AI 上传文档或文本，一键生成结构化需求文档</p>
+        <p className="text-sm text-[var(--color-text-secondary)] mt-1">
+          通过 AI 上传文档或文本，一键生成结构化需求文档；上传用户手册等产品文档时，将按文档目录章节顺序生成
+        </p>
       </div>
 
       {/* 步骤条 */}

@@ -667,3 +667,12 @@ select:disabled {
 .functional-test-table .ant-table-column-sorter .anticon {
   font-size: 12px;
 }
+
+/* 需求文档关联编号跳转命中高亮 */
+.requirement-scroll-highlight {
+  background-color: #fff7ed !important;
+  box-shadow: 0 0 0 2px #fb923c;
+  border-radius: 6px;
+  scroll-margin-top: 16px;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}

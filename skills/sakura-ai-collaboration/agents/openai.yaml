@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sakura AI Collaboration"
+  short_description: "Team collaboration rules for Sakura AI coding work."
+  default_prompt: "Use Sakura AI collaboration principles while making scoped, verified project changes."

@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Check, Star, List, Eye, Target, Folder, CheckCircle2 } from 'lucide-react';
+import { AlertTriangle, Check, Star, List, Eye, Target, CheckCircle2, FileText } from 'lucide-react';
 import { clsx } from 'clsx';
 import { getCaseTypeInfo } from '../../utils/caseTypeHelper';
 import { countSteps } from '../../utils/stepsCounter';
@@ -26,9 +26,14 @@ const priorityConfig: Record<string, { label: string; color: string; bg: string;
 export function DraftCaseGridView({ testCase, selected, onToggleSelect, onViewDetail, index }: DraftCaseGridViewProps) {
   const tc = testCase;
   const saved = tc.saved && !tc.modified;
+  const isFiltered = Boolean(tc.isFiltered);
   const priority = priorityConfig[tc.priority] || priorityConfig.medium;
   const typeInfo = getCaseTypeInfo(tc.caseType);
   const stepsCount = countSteps(tc.steps);
+  const requirementRefs = Array.from(new Set([
+    ...((tc.coveredRequirementRefs || []) as string[]),
+    ...(((tc.testPoints || []) as any[]).flatMap((tp: any) => tp.coveredRequirementRefs || []) as string[])
+  ]));
 
   return (
     <motion.div
@@ -36,6 +41,8 @@ export function DraftCaseGridView({ testCase, selected, onToggleSelect, onViewDe
         "relative rounded-xl border-2 transition-all cursor-pointer group overflow-hidden",
         saved
           ? "border-green-300 bg-gradient-to-br from-green-50/50 to-white"
+          : isFiltered
+            ? "border-orange-300 bg-gradient-to-br from-orange-50/70 to-white hover:border-orange-400"
           : selected
             ? "border-purple-500 bg-gradient-to-br from-purple-50/50 to-white shadow-lg ring-2 ring-purple-500/20"
             : "border-gray-200 bg-white hover:border-purple-300 hover:shadow-md"
@@ -51,6 +58,7 @@ export function DraftCaseGridView({ testCase, selected, onToggleSelect, onViewDe
       <div className={clsx(
         "h-1",
         saved ? "bg-green-400" :
+        isFiltered ? "bg-orange-400" :
         tc.priority === 'critical' ? "bg-red-500" :
         tc.priority === 'high' ? "bg-orange-500" :
         tc.priority === 'medium' ? "bg-blue-500" : "bg-gray-300"
@@ -76,6 +84,11 @@ export function DraftCaseGridView({ testCase, selected, onToggleSelect, onViewDe
             {saved && (
               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-green-100 text-green-700 border border-green-200">
                 ✓ 已保存
+              </span>
+            )}
+            {isFiltered && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-700 border border-orange-200" title={tc.filterReason || '数据一致性验证失败'}>
+                待确认
               </span>
             )}
             {tc.saved && tc.modified && (
@@ -114,6 +127,28 @@ export function DraftCaseGridView({ testCase, selected, onToggleSelect, onViewDe
         <p className="text-xs text-gray-500 line-clamp-2 mb-3 leading-relaxed">
           {tc.testPurpose || tc.description || '暂无描述'}
         </p>
+
+        {isFiltered && tc.filterReason && (
+          <p className="flex items-start gap-1.5 text-[10px] text-orange-700 bg-orange-100 border border-orange-200 rounded-md px-2 py-1 mb-3 line-clamp-2">
+            <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+            <span>过滤原因：{tc.filterReason}</span>
+          </p>
+        )}
+
+        {requirementRefs.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap mb-3">
+            <FileText className="w-3 h-3 text-blue-500" />
+            <span className="text-[10px] font-semibold text-gray-600">关联需求:</span>
+            {requirementRefs.slice(0, 4).map(ref => (
+              <span key={ref} className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] rounded border border-blue-200">
+                {ref}
+              </span>
+            ))}
+            {requirementRefs.length > 4 && (
+              <span className="text-[10px] text-gray-500">+{requirementRefs.length - 4}</span>
+            )}
+          </div>
+        )}
 
         {/* 底部信息 */}
         <div className="flex items-center justify-between pt-2.5 border-t border-gray-100">

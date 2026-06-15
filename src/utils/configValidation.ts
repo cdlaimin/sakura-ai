@@ -55,14 +55,6 @@ export class ConfigValidation {
       };
     }
 
-    if (maxTokens > 8000) {
-      return {
-        field: 'maxTokens',
-        message: 'Max Tokens不能超过8000',
-        code: 'OUT_OF_RANGE'
-      };
-    }
-
     return null;
   }
 

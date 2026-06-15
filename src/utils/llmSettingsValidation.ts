@@ -65,11 +65,11 @@ export function validateLLMSettings(settings: LLMSettings): ValidationResult {
 
     // 验证 Max Tokens
     if (maxTokens !== undefined) {
-      if (maxTokens < 1 || maxTokens > 8000) {
+      if (!Number.isInteger(maxTokens) || maxTokens < 1) {
         errors.push({
           field: 'maxTokens',
-          message: 'Max Tokens必须在1-8000之间',
-          code: 'OUT_OF_RANGE'
+          message: 'Max Tokens必须是大于0的整数',
+          code: 'INVALID_VALUE'
         });
       }
     }

@@ -12,6 +12,7 @@ export function scrollToRequirementSectionInContainer(
   if (!scrollRoot || !sectionLabel.trim()) return;
   const normalized = sectionLabel.replace(/\s+/g, ' ').trim();
   const heads = [...scrollRoot.querySelectorAll('h1,h2,h3,h4,h5,h6')] as HTMLElement[];
+  const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   const pick = (): HTMLElement | null => {
     for (const h of heads) {
@@ -30,11 +31,33 @@ export function scrollToRequirementSectionInContainer(
         }
       }
     }
+
+    if (/^FR-/i.test(normalized)) {
+      const refPattern = new RegExp(`(^|\\b|\\s)${escapeRegExp(normalized)}(\\b|\\s|[:：-])`, 'i');
+      const candidates = [
+        ...scrollRoot.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,td,th,strong,em,span')
+      ] as HTMLElement[];
+
+      for (const item of candidates) {
+        const t = (item.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (t === normalized || refPattern.test(t)) {
+          return item.closest('li,p,td,th,blockquote,h1,h2,h3,h4,h5,h6') as HTMLElement || item;
+        }
+      }
+    }
+
     return null;
   };
 
   const el = pick();
-  el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  el.classList.add('requirement-scroll-highlight');
+  window.setTimeout(() => {
+    el.classList.remove('requirement-scroll-highlight');
+  }, 1800);
 }
 
 /**

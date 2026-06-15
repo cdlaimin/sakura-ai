@@ -822,9 +822,15 @@ export function createFunctionalTestCaseRoutes(): Router {
       });
     } catch (error: any) {
       console.error('❌ 生成测试点失败:', error);
-      res.status(500).json({
+      const message = error.message || '生成测试点失败';
+      const status = message.includes('(402)') || message.includes('配额不足')
+        ? 402
+        : message.includes('(429)') || message.includes('限流')
+            ? 429
+            : 500;
+      res.status(status).json({
         success: false,
-        error: error.message
+        error: message
       });
     }
   });

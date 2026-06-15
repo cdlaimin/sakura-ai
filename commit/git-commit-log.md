@@ -680,3 +680,8 @@ feat: 更新依赖和增强文件处理功能
 - feat(openclaw): 子角色交付物引入大文件混合模式，HTML原型/长代码直接write落盘避免Gateway超时截断，JSON标记WRITTEN_TO_DISK由Main验证
 - fix(openclaw): 大文件模式write路径改为绝对路径(/root/.openclaw/workspace-main/deliverables/)，解决子角色独立workspace导致文件写入错误位置、Main无法访问和预览链接失效的问题
 - chore(openclaw): 删除workspace-main/memory/archive/下2个已归档历史文档（规则已合并至AGENTS.md和TASK_CONTRACT.md），清理空目录
+- feat(upload): 文件大小上限按类型分层，容器/二进制格式（docx/doc/pdf/zip）放宽至 100MB，纯文本类（html/js/md/txt）保持 10MB，解决大体积 Word 文档无法上传问题
+- fix(fileReader): DOCX 解析不再将图片内联为 base64，改为占位符仅提取文字，避免图多的大文档把提取文本撑大到数十 MB 导致 token 超限/分片异常/浏览器卡死
+- refactor(MultiFileUpload): 大小校验按文件类型采用不同上限，更新超限弹窗与上传区提示文案，明确文本类与 Word/PDF/ZIP 的不同限制及“图片不会被识别”说明
+- fix(fileReader): DOCX 解析入口检测旧版 .doc 二进制（OLE 复合文档文件头 D0CF11E0），命中时抛出“请另存为 .docx 再上传”的友好提示，避免 mammoth 抛出难以理解的错误
+- fix(RequirementAnalysis): 修复需求分析页 handleFileUpload/handleMergedFileUpload 仍写死 10MB 校验导致大 Word(.docx) 被拦截、左侧无内容无法下一步的问题，改用 getMaxFileSizeForName 按类型取上限（容器格式 100MB）

@@ -1,5 +1,21 @@
 import { llmConfigManager } from '../../src/services/llmConfigManager.js';
 import { createAIAbortController, formatTimeoutError } from '../utils/aiTimeout.js';
+import {
+  buildDocumentOutlinePromptBlock,
+  buildOutlineAwareChunkPromptPrefix,
+  buildOutlineAwareMergePromptPrefix,
+  buildOutlineContinuePrompt,
+  buildOutlineGapFillPrompt,
+  computeOutlineContinueMaxRounds,
+  extractDocumentOutline,
+  extractSourceExcerptForOutlineItems,
+  findMissingOutlineSections,
+  insertOutlineSupplementInDocumentOrder,
+  shouldForceChunkedRequirementGeneration,
+  splitTextByDocumentOutline,
+  splitTextByOutlineGroups,
+  type DocumentOutlineItem,
+} from '../utils/documentOutline.js';
 import AdmZip from 'adm-zip';
 import { unzipSync, strFromU8 } from 'fflate';
 
@@ -265,6 +281,14 @@ function parseJsonRecordEnv(envValue: string | undefined): Record<string, unknow
   } catch {
     return null;
   }
+}
+
+function parseBooleanEnv(envValue: string | undefined, defaultValue: boolean): boolean {
+  const raw = String(envValue || '').trim().toLowerCase();
+  if (!raw) return defaultValue;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  return defaultValue;
 }
 
 function normalizeModelKeyForLookup(model: string): string {
@@ -582,12 +606,435 @@ function clipRequirementLog(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars)}\n...[truncated ${text.length - maxChars} chars]`;
 }
 
+function clipPromptText(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const head = Math.floor(maxChars * 0.65);
+  const tail = Math.max(1000, maxChars - head);
+  return `${text.slice(0, head)}\n\n...[中间内容已截断 ${text.length - maxChars} 字符]...\n\n${text.slice(-tail)}`;
+}
+
+/**
+ * 需求文档生成专用输出 token 上限（可与全局 maxTokens 不同）。
+ * 大上下文模型（如 deepseek-v4-pro 1M）自动提高输出上限，减轻截断。
+ */
+function resolveRequirementDocMaxOutputTokens(params: {
+  configuredMaxTokens: number;
+  model: string;
+  modelContextWindowsJson?: string;
+}): number {
+  const configured = Math.max(1000, params.configuredMaxTokens || 8000);
+  const mappingOverride = parseJsonRecordEnv(params.modelContextWindowsJson);
+  const contextWindow = estimateContextWindowTokensByModel(params.model, mappingOverride);
+
+  const envCap = parseInt(process.env.REQUIREMENT_DOC_MAX_OUTPUT_TOKENS || '', 10);
+  const envFloor = parseInt(process.env.REQUIREMENT_DOC_MIN_OUTPUT_TOKENS || '', 10);
+
+  let cap = 8000;
+  if (Number.isFinite(envCap) && envCap >= 4000) {
+    cap = envCap;
+  } else if (contextWindow >= 500_000) {
+    cap = 32768;
+  } else if (contextWindow >= 200_000) {
+    cap = 16384;
+  } else if (contextWindow >= 128_000) {
+    cap = 12000;
+  }
+
+  let resolved = Math.max(configured, Math.min(cap, Math.floor(contextWindow * 0.04)));
+  if (Number.isFinite(envFloor) && envFloor >= 4000) {
+    resolved = Math.max(resolved, envFloor);
+  }
+  resolved = Math.min(resolved, cap);
+  return Math.max(4000, resolved);
+}
+
 function hasRequirementSectionTitle(content: string, title: string): boolean {
   const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const plain = new RegExp(`^##\\s*${escaped}\\s*$`, 'm');
   if (plain.test(content)) return true;
   const numbered = new RegExp(`^##\\s*\\d+[\\.、]?\\s*${escaped}\\s*$`, 'm');
   return numbered.test(content);
+}
+
+function escapeRegExpText(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const REQUIREMENT_CHUNK_TAIL_SECTION_TITLES = new Set([
+  '变更摘要',
+  '概述',
+  '术语与范围',
+  '非功能需求',
+  '数据与集成需求',
+  '风险与待确认事项',
+  '交付计划与优先级',
+  '测试范围与回归建议',
+  '运营与治理',
+  '约束与假设',
+  '附录',
+]);
+
+function normalizeMarkdownHeadingTitle(title: string): string {
+  return title
+    .replace(/[`*_#]/g, '')
+    .replace(/^\d+(?:\.\d+)*[.、]?\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function findFirstOutlineHeadingIndex(content: string, outline: DocumentOutlineItem[]): number {
+  let best = -1;
+  for (const item of outline) {
+    const index = findOutlineHeadingIndexForItem(content, item);
+    if (index >= 0 && (best < 0 || index < best)) best = index;
+  }
+  return best;
+}
+
+function findOutlineHeadingIndexForItem(content: string, item: DocumentOutlineItem): number {
+  const id = escapeRegExpText(item.id.replace(/\.$/, '').trim());
+  const title = escapeRegExpText(item.title.trim());
+  const fullTitle = escapeRegExpText(item.fullTitle.trim());
+  const patterns = [
+    new RegExp(`^#{1,6}\\s+\`?(?:${fullTitle}|${id}\\.?\\s+${title})(?:\\s*[\`：:]?\\s*)?$`, 'm'),
+    new RegExp(`^#{1,6}\\s+\`?${id}\\.?\\s+`, 'm'),
+    new RegExp(`^\`?(?:${fullTitle}|${id}\\.?\\s+${title})(?:\\s*\`?\\s*)?$`, 'm'),
+    new RegExp(`^\`?${id}\\.?\\s+`, 'm'),
+  ];
+  let best = -1;
+  for (const pattern of patterns) {
+    const match = pattern.exec(content);
+    if (match && (best < 0 || match.index < best)) best = match.index;
+  }
+  return best;
+}
+
+function isOutlineHeadingLine(line: string, outline: DocumentOutlineItem[]): boolean {
+  return outline.some((item) => {
+    const id = escapeRegExpText(item.id.replace(/\.$/, '').trim());
+    const title = escapeRegExpText(item.title.trim());
+    return (
+      new RegExp(`^#{1,6}\\s+\`?${id}\\.?\\s+${title}(?:\\s*\`?\\s*)?$`).test(line) ||
+      new RegExp(`^#{1,6}\\s+\`?${id}\\.?\\s+`).test(line)
+    );
+  });
+}
+
+function findFirstChunkTailSectionIndex(
+  content: string,
+  fromIndex: number,
+  outline: DocumentOutlineItem[]
+): number {
+  const headingRe = /^(#{1,6})\s+(.+?)\s*$/gm;
+  headingRe.lastIndex = Math.max(0, fromIndex);
+  let match: RegExpExecArray | null;
+  while ((match = headingRe.exec(content)) !== null) {
+    const level = match[1].length;
+    if (level > 2) continue;
+    if (isOutlineHeadingLine(match[0], outline)) continue;
+    const title = normalizeMarkdownHeadingTitle(match[2]);
+    if (REQUIREMENT_CHUNK_TAIL_SECTION_TITLES.has(title)) {
+      return match.index;
+    }
+  }
+  return -1;
+}
+
+function stripRequirementChunkWrapper(params: {
+  draft: string;
+  outline: DocumentOutlineItem[];
+  keepPreamble: boolean;
+}): string {
+  const draft = params.draft.trim();
+  if (!draft) return '';
+
+  const firstOutlineHeadingIndex = findFirstOutlineHeadingIndex(draft, params.outline);
+  if (firstOutlineHeadingIndex < 0) {
+    return params.keepPreamble ? draft : '';
+  }
+
+  const startIndex = params.keepPreamble ? 0 : firstOutlineHeadingIndex;
+  const tailIndex = findFirstChunkTailSectionIndex(
+    draft,
+    firstOutlineHeadingIndex + 1,
+    params.outline
+  );
+  const endIndex = tailIndex >= 0 ? tailIndex : draft.length;
+  return draft.slice(startIndex, endIndex).trim();
+}
+
+function mergeOutlineChunksDeterministically(
+  chunkOutputs: string[],
+  documentOutline: DocumentOutlineItem[]
+): string {
+  const cleanedParts = chunkOutputs
+    .map((draft, index) =>
+      stripRequirementChunkWrapper({
+        draft,
+        outline: documentOutline,
+        keepPreamble: false,
+      })
+    )
+    .filter(Boolean);
+
+  if (cleanedParts.length === 0) {
+    return chunkOutputs.map((draft) => draft.trim()).filter(Boolean).join('\n\n');
+  }
+
+  return cleanedParts.join('\n\n');
+}
+
+function findRequirementTailMetaIndex(content: string): number {
+  const tailTitles = [
+    '交付计划与优先级',
+    '测试范围与回归建议',
+    '非功能需求',
+    '数据与集成需求',
+    '风险与待确认事项',
+    '约束与假设',
+    '变更摘要',
+  ];
+  let best = -1;
+  for (const title of tailTitles) {
+    const escaped = escapeRegExpText(title);
+    const patterns = [
+      new RegExp(`^##\\s*\\d+[.、]?\\s*${escaped}\\s*$`, 'm'),
+      new RegExp(`^##\\s*${escaped}\\s*$`, 'm'),
+    ];
+    for (const pattern of patterns) {
+      const match = pattern.exec(content);
+      if (match && (best < 0 || match.index < best)) best = match.index;
+    }
+  }
+  return best;
+}
+
+function stripStandaloneHeadingSourceLines(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let prev = '';
+    for (let j = out.length - 1; j >= 0; j--) {
+      if (out[j].trim()) {
+        prev = out[j];
+        break;
+      }
+    }
+    const prevIsHeading = /^#{1,6}\s+/.test(prev.trim());
+    const isStandaloneSource = /^\s*(?:[-*]\s*)?\*\*来源\*\*\s*[：:]\s*材料\b/.test(line.trim());
+    if (prevIsHeading && isStandaloneSource) continue;
+    out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function expectedMarkdownHeadingLevel(item: DocumentOutlineItem): number {
+  return Math.max(3, Math.min(6, item.level + 2));
+}
+
+function headingLineMatchesOutlineItem(line: string, item: DocumentOutlineItem): boolean {
+  const id = escapeRegExpText(item.id.replace(/\.$/, '').trim());
+  const title = escapeRegExpText(item.title.trim());
+  return (
+    new RegExp(`^#{1,6}\\s+\`?${id}\\.?\\s+${title}(?:\\s*\`?\\s*)?$`).test(line.trim()) ||
+    new RegExp(`^#{1,6}\\s+\`?${id}\\.?\\s+`).test(line.trim())
+  );
+}
+
+function findOutlineItemForHeadingLine(
+  line: string,
+  outline: DocumentOutlineItem[]
+): DocumentOutlineItem | null {
+  if (!/^#{1,6}\s+/.test(line.trim())) return null;
+  return outline.find((item) => headingLineMatchesOutlineItem(line, item)) || null;
+}
+
+function normalizeOutlineHeadingBlock(
+  block: string,
+  currentItem: DocumentOutlineItem,
+  outline: DocumentOutlineItem[]
+): string {
+  const lines = block.split(/\r?\n/);
+  const out: string[] = [];
+  let currentHeadingWritten = false;
+
+  for (const line of lines) {
+    const matched = findOutlineItemForHeadingLine(line, outline);
+    if (!matched) {
+      out.push(line);
+      continue;
+    }
+
+    const normalized = `${'#'.repeat(expectedMarkdownHeadingLevel(matched))} ${matched.fullTitle}`;
+    if (matched.id === currentItem.id) {
+      if (currentHeadingWritten) continue;
+      currentHeadingWritten = true;
+      out.push(normalized);
+      continue;
+    }
+
+    out.push(normalized);
+  }
+
+  if (!currentHeadingWritten) {
+    return `${'#'.repeat(expectedMarkdownHeadingLevel(currentItem))} ${currentItem.fullTitle}\n\n${block}`.trim();
+  }
+
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function stripKnownRequirementSourceSuffixes(title: string): string {
+  return title
+    .replace(/\.(docx?|pdf|md|markdown|txt|html?|json|csv)$/i, '')
+    .replace(/[【】\[\]()（）]/g, ' ')
+    .replace(/\b(copy|副本)\b/gi, ' ')
+    .replace(/需求文档/g, ' ')
+    .replace(/用户手册|使用手册|操作手册|产品手册|说明书|白皮书|规格说明/g, ' ')
+    .replace(/v?(\d+(?:\.\d+)+)\s*(?:版|版本)?/i, 'V$1')
+    .replace(/\s+(V\d)/i, '$1')
+    .replace(/[_\-—–]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function inferRequirementDocTitle(params: {
+  sourceTitle?: string;
+  sourceText?: string;
+}): string {
+  const explicit = String(process.env.REQUIREMENT_DOC_TITLE || '').trim();
+  if (explicit) return explicit;
+
+  const candidates: string[] = [];
+  if (params.sourceTitle) candidates.push(params.sourceTitle);
+
+  const sourceHead = String(params.sourceText || '').slice(0, 5000);
+  const headingMatches = sourceHead.match(/^#{1,3}\s+(.+)$/gm) || [];
+  for (const line of headingMatches.slice(0, 6)) {
+    candidates.push(line.replace(/^#{1,3}\s+/, ''));
+  }
+
+  const versionedProduct = sourceHead.match(
+    /([\u4e00-\u9fa5A-Za-z0-9（）()·\-_\s]{2,60}?(?:系统|平台|产品|工具|模块)[\u4e00-\u9fa5A-Za-z0-9（）()·\-_\s]{0,30}?(?:V|v)?\d+(?:\.\d+)+)/
+  );
+  if (versionedProduct?.[1]) candidates.push(versionedProduct[1]);
+
+  const product = sourceHead.match(
+    /([\u4e00-\u9fa5A-Za-z0-9（）()·\-_\s]{2,50}?(?:系统|平台|产品|工具|模块))/
+  );
+  if (product?.[1]) candidates.push(product[1]);
+
+  for (const candidate of candidates) {
+    const normalized = stripKnownRequirementSourceSuffixes(candidate);
+    if (!normalized || normalized.length < 3) continue;
+    if (/^(目录|概述|系统概述|产品概述|需求文档)$/i.test(normalized)) continue;
+    return `${normalized} 需求文档`;
+  }
+
+  return '需求文档';
+}
+
+function stripRequirementDocSuffix(title: string): string {
+  return title.replace(/\s*需求文档\s*$/i, '').trim();
+}
+
+function buildRequirementIntroSections(params: {
+  title: string;
+  sourceTitle?: string;
+  sourceText?: string;
+}): string {
+  const productName = stripRequirementDocSuffix(params.title) || '本系统';
+  const sourceName =
+    stripKnownRequirementSourceSuffixes(params.sourceTitle || '') ||
+    productName;
+  const text = params.sourceText || '';
+  const isManualLike = /用户手册|操作手册|使用手册|产品说明/.test(sourceName) || /用户手册|操作手册|使用手册/.test(text.slice(0, 5000));
+  const isDesignLike = /设计文档|概要设计|详细设计|设计说明/.test(sourceName) || /设计文档|概要设计|详细设计|设计说明/.test(text.slice(0, 5000));
+  const materialType = isDesignLike ? '设计文档' : isManualLike ? '用户手册/产品说明' : '业务材料';
+  const changeSummary = isDesignLike
+    ? `原输入材料为《${sourceName}》${materialType}。本文档将其中的设计说明、接口、数据、流程与异常处理内容转化为结构化需求；材料未明确变更范围时，不生成迭代差异结论。`
+    : isManualLike
+      ? `原输入材料为《${sourceName}》${materialType}，并非针对特定版本的迭代说明。本文档将材料内容转化为结构化需求；材料未明确变更范围时，不生成迭代差异结论。`
+      : `原输入材料为《${sourceName}》。本文档仅基于材料中可确认的信息提炼结构化需求；材料未明确变更范围时，不生成迭代差异结论。`;
+
+  return [
+    '## 变更摘要',
+    changeSummary,
+    '',
+    '## 概述',
+    `背景与目标：本文档旨在将《${sourceName}》中的内容，转化为结构化、可交付、可验收的产品需求规格。该文档将作为研发、测试、交付团队理解系统功能、进行开发和验证的依据。`,
+    '关键干系人/角色：[待确认] 材料未明确完整用户角色；可从后续功能需求中的权限、接口鉴权和操作主体继续细化。',
+    '阶段目标：[待确认] 材料未明确 MVP/二期/三期分期；交付计划依据 P0/P1/P2 优先级在文末归纳。',
+    '',
+    '## 术语与范围',
+    `范围（In）：${productName} 中由《${sourceName}》明确描述的功能、接口、数据结构、流程、规则、异常处理、非功能约束与测试/验收关注点。`,
+    '范围（Out）：',
+    '- 材料未展开的外部系统内部实现、底层代码实现和部署运维细节。',
+    '- 仅在参考资料、背景说明或类名中出现但未描述业务行为的内容。',
+    '- 材料未给出字段定义、阈值、权限点、错误码或接口契约的部分，需在对应章节标注 [待确认]。',
+  ].join('\n');
+}
+
+function hasDescendantBlock(
+  item: DocumentOutlineItem,
+  outline: DocumentOutlineItem[],
+  ranges: Map<string, string>
+): boolean {
+  const prefix = `${item.id}.`;
+  return outline.some((candidate) => candidate.id.startsWith(prefix) && ranges.has(candidate.id));
+}
+
+function buildMissingOutlineHeadingBlock(
+  item: DocumentOutlineItem,
+  outline: DocumentOutlineItem[],
+  ranges: Map<string, string>
+): string {
+  const heading = `${'#'.repeat(expectedMarkdownHeadingLevel(item))} ${item.fullTitle}`;
+  if (hasDescendantBlock(item, outline, ranges)) return heading;
+  return `${heading}\n\n[待确认] 材料未提供本节可提炼的详细需求内容，或模型输出中未稳定定位到该章节。`;
+}
+
+function reorderContentByDocumentOutline(
+  content: string,
+  outline: DocumentOutlineItem[],
+  options?: { sourceTitle?: string; sourceText?: string }
+): string {
+  if (outline.length === 0 || !content.trim()) return content;
+
+  const starts = outline
+    .map((item) => ({ item, start: findOutlineHeadingIndexForItem(content, item) }))
+    .filter((entry) => entry.start >= 0)
+    .sort((a, b) => a.start - b.start);
+  if (starts.length === 0) return content;
+
+  const tailMetaIndex = findRequirementTailMetaIndex(content);
+  const ranges = new Map<string, string>();
+  for (let i = 0; i < starts.length; i++) {
+    const current = starts[i];
+    const next = starts[i + 1];
+    const physicalEnd = next?.start ?? (tailMetaIndex > current.start ? tailMetaIndex : content.length);
+    const block = normalizeOutlineHeadingBlock(
+      content.slice(current.start, physicalEnd).trim(),
+      current.item,
+      outline
+    );
+    if (block && !ranges.has(current.item.id)) ranges.set(current.item.id, block);
+  }
+
+  const title = inferRequirementDocTitle({
+    sourceTitle: options?.sourceTitle,
+    sourceText: options?.sourceText,
+  });
+  const orderedBlocks = outline.map((item) =>
+    ranges.get(item.id) || buildMissingOutlineHeadingBlock(item, outline, ranges)
+  );
+  const intro = buildRequirementIntroSections({
+    title,
+    sourceTitle: options?.sourceTitle,
+    sourceText: options?.sourceText,
+  });
+  const body = orderedBlocks.join('\n\n');
+  return stripStandaloneHeadingSourceLines(`# ${title}\n\n${intro}\n\n## 功能需求\n\n${body}`);
 }
 
 function logRequirementDocLLM(
@@ -698,24 +1145,38 @@ export class AnalysisService {
     initialContent: string;
     initialFinishReason?: string;
     logScene?: string;
+    documentOutline?: DocumentOutlineItem[];
   }): Promise<string> {
     let content = params.initialContent;
     let finishReason = params.initialFinishReason;
     let rounds = 0;
-    const maxRounds = 3;
+    const outline = params.documentOutline ?? [];
+    const maxRounds =
+      outline.length > 0 ? computeOutlineContinueMaxRounds(outline.length) : 3;
 
-    while (finishReason === 'length' && rounds < maxRounds) {
+    const needsMoreOutput = (): boolean => {
+      if (finishReason === 'length') return true;
+      if (outline.length === 0) return false;
+      return findMissingOutlineSections(content, outline).length > 0;
+    };
+
+    while (needsMoreOutput() && rounds < maxRounds) {
       rounds += 1;
       const tail = content.slice(-2200);
       const continueScene = params.logScene ? `${params.logScene}:continue-${rounds}` : undefined;
-      const mustKeepStructureTip =
-        params.logScene?.includes(':merge') || params.logScene?.includes(':single')
-          ? '\n\n重要：请保持同一份需求文档的章节连续性；若尚未输出“8. 交付计划与优先级”和“9. 测试范围与回归建议”，必须继续补全。'
-          : '';
+      const missing = outline.length > 0 ? findMissingOutlineSections(content, outline) : [];
+
       const continuePrompt =
-        '你上一条输出因长度上限被截断。请仅继续输出剩余内容，从末尾自然续写，不要重复已有内容。\n\n' +
-        `已输出末尾参考：\n${tail}` +
-        mustKeepStructureTip;
+        missing.length > 0
+          ? buildOutlineContinuePrompt({ missing, tail })
+          : '你上一条输出因长度上限被截断。请仅继续输出剩余内容，从末尾自然续写，不要重复已有内容。\n\n' +
+            `已输出末尾参考：\n${tail}`;
+
+      if (continueScene && missing.length > 0) {
+        console.log(
+          `[RequirementDoc] 续写第 ${rounds} 轮：仍有 ${missing.length}/${outline.length} 个目录章节未覆盖`
+        );
+      }
 
       const next = await this.callRequirementModelOnce({
         apiEndpoint: params.apiEndpoint,
@@ -729,6 +1190,111 @@ export class AnalysisService {
       });
       content += `\n${next.content}`;
       finishReason = next.finishReason;
+    }
+
+    return content;
+  }
+
+  /** 目录驱动：对仍未出现在文档中的章节，按材料摘录分批补写 */
+  private async fillMissingOutlineSectionsIfNeeded(params: {
+    apiEndpoint: string;
+    apiKey: string;
+    selectedModel: string;
+    maxTokens: number;
+    timeoutConfig: ReturnType<typeof llmConfigManager.getCurrentConfig>['timeout'];
+    systemPrompt: string;
+    content: string;
+    sourceText: string;
+    documentOutline: DocumentOutlineItem[];
+    logScene?: string;
+    onProgress?: (event: { phase: string; message?: string }) => void;
+  }): Promise<string> {
+    const { documentOutline } = params;
+    if (documentOutline.length === 0) return params.content;
+
+    let content = params.content;
+    const batchSizeRaw = parseInt(process.env.REQUIREMENT_DOC_OUTLINE_GAP_FILL_BATCH || '6', 10);
+    const batchSize =
+      Number.isFinite(batchSizeRaw) && batchSizeRaw >= 2 ? Math.min(batchSizeRaw, 12) : 6;
+    const maxBatchesRaw = parseInt(process.env.REQUIREMENT_DOC_OUTLINE_GAP_FILL_MAX_BATCHES || '8', 10);
+    const maxBatches =
+      Number.isFinite(maxBatchesRaw) && maxBatchesRaw >= 1 ? maxBatchesRaw : 8;
+
+    let batchIndex = 0;
+    while (batchIndex < maxBatches) {
+      const missing = findMissingOutlineSections(content, documentOutline);
+      if (missing.length === 0) break;
+
+      const batch = missing.slice(0, batchSize);
+      batchIndex += 1;
+      params.onProgress?.({
+        phase: 'generating',
+        message: `补全缺失目录章节（${batchIndex}）：${batch.map((b) => b.fullTitle).join('、')}…`,
+      });
+
+      const excerptMaxChars = parseInt(
+        process.env.REQUIREMENT_DOC_OUTLINE_GAP_SOURCE_MAX_CHARS || '120000',
+        10
+      );
+      const sourceExcerpt = extractSourceExcerptForOutlineItems(
+        params.sourceText,
+        documentOutline,
+        batch,
+        Number.isFinite(excerptMaxChars) && excerptMaxChars > 10000 ? excerptMaxChars : 120000
+      );
+
+      const scene = params.logScene
+        ? `${params.logScene}:outline-gap-${batchIndex}`
+        : undefined;
+      const gapPrompt = buildOutlineGapFillPrompt({
+        missing: batch,
+        sourceExcerpt,
+        documentTail: content.slice(-2500),
+      });
+
+      const filled = await this.callRequirementModelOnce({
+        apiEndpoint: params.apiEndpoint,
+        apiKey: params.apiKey,
+        selectedModel: params.selectedModel,
+        maxTokens: params.maxTokens,
+        timeoutConfig: params.timeoutConfig,
+        systemPrompt: params.systemPrompt,
+        userMessage: gapPrompt,
+        logScene: scene,
+      });
+
+      const appendix = await this.continueRequirementOutputIfNeeded({
+        apiEndpoint: params.apiEndpoint,
+        apiKey: params.apiKey,
+        selectedModel: params.selectedModel,
+        maxTokens: params.maxTokens,
+        timeoutConfig: params.timeoutConfig,
+        systemPrompt: params.systemPrompt,
+        initialContent: filled.content,
+        initialFinishReason: filled.finishReason,
+        logScene: scene ? `${scene}:continue` : undefined,
+        documentOutline: batch,
+      });
+
+      content = insertOutlineSupplementInDocumentOrder({
+        content,
+        supplement: appendix,
+        outline: documentOutline,
+        batchItems: batch,
+      });
+      console.log(
+        `[RequirementDoc] 目录补缺批次 ${batchIndex} 完成（已按目录顺序插入），仍缺 ${findMissingOutlineSections(content, documentOutline).length} 节`
+      );
+    }
+
+    const stillMissing = findMissingOutlineSections(content, documentOutline);
+    if (stillMissing.length > 0) {
+      console.warn(
+        `[RequirementDoc] 目录补缺后仍有 ${stillMissing.length} 节未覆盖：${stillMissing
+          .slice(0, 8)
+          .map((m) => m.fullTitle)
+          .join('、')}${stillMissing.length > 8 ? '…' : ''}`
+      );
     }
 
     return content;
@@ -754,7 +1320,16 @@ export class AnalysisService {
     if (needTestPlan) missingTitles.push('9. 测试范围与回归建议');
 
     const scene = params.logScene ? `${params.logScene}:tail-sections` : undefined;
-    const sourceDigest = params.sourceDrafts.map((d, i) => `### 分片草稿 ${i + 1}\n\n${d}`).join('\n\n---\n\n');
+    const sourceDigestRaw = params.sourceDrafts.map((d, i) => `### 分片草稿 ${i + 1}\n\n${d}`).join('\n\n---\n\n');
+    const sourceDigestMaxCharsRaw = parseInt(
+      process.env.REQUIREMENT_DOC_TAIL_SOURCE_MAX_CHARS || '100000',
+      10
+    );
+    const sourceDigestMaxChars =
+      Number.isFinite(sourceDigestMaxCharsRaw) && sourceDigestMaxCharsRaw >= 20000
+        ? sourceDigestMaxCharsRaw
+        : 100000;
+    const sourceDigest = clipPromptText(sourceDigestRaw, sourceDigestMaxChars);
     const prompt =
       `当前需求文档缺少以下章节：${missingTitles.join('、')}。\n` +
       '请仅基于“当前已合并文档”和“分片草稿”补齐缺失章节，禁止改写已存在章节，禁止新增其他章节。\n' +
@@ -878,6 +1453,7 @@ export class AnalysisService {
     model?: string,
     options?: {
       systemPrompt?: string;
+      sourceTitle?: string;
       /** 设置后打印完整提示词与响应摘要（见 REQUIREMENT_DOC_LLM_LOG_PROMPTS） */
       logScene?: string;
       onProgress?: (event: { phase: string; current?: number; total?: number; message?: string }) => void;
@@ -894,7 +1470,18 @@ export class AnalysisService {
 
     // 从系统设置中获取模型的 max_tokens 配置
     const modelInfo = llmConfigManager.getModelInfo();
-    const maxTokens = config.maxTokens || modelInfo.defaultConfig.maxTokens || 8000;
+    const configuredMaxTokens = config.maxTokens || modelInfo.defaultConfig.maxTokens || 8000;
+    const inputLimitsEarly = getResolvedInputLimits(config);
+    const maxTokens = resolveRequirementDocMaxOutputTokens({
+      configuredMaxTokens,
+      model: selectedModel,
+      modelContextWindowsJson: inputLimitsEarly?.modelContextWindowsJson,
+    });
+    if (maxTokens !== configuredMaxTokens) {
+      console.log(
+        `[RequirementDoc] 输出 max_tokens：全局=${configuredMaxTokens} → 需求文档=${maxTokens}（模型 ${selectedModel}）`
+      );
+    }
 
     if (!apiKey) {
       throw new Error('AI 服务未配置 API Key，请在设置中配置');
@@ -914,22 +1501,52 @@ export class AnalysisService {
     const logScene = options?.logScene;
 
     const cleanedText = sanitizeRequirementInputText(text);
+    const documentOutline = extractDocumentOutline(cleanedText);
+    const outlinePromptBlock = buildDocumentOutlinePromptBlock(documentOutline);
+    const effectiveSystemPrompt = outlinePromptBlock
+      ? `${systemPrompt}\n\n---\n\n${outlinePromptBlock}`
+      : systemPrompt;
+    const chunkPromptPrefix = buildOutlineAwareChunkPromptPrefix(documentOutline);
+    const mergePromptPrefix = buildOutlineAwareMergePromptPrefix(documentOutline);
+
+    if (documentOutline.length > 0) {
+      console.log(
+        `[RequirementDoc] 已识别材料目录结构：${documentOutline.length} 个章节（将按目录顺序生成）`
+      );
+    }
+
     options?.onProgress?.({
       phase: 'preprocess',
-      message: cleanedText.length !== text.length ? '已净化输入噪声内容' : '输入预处理完成'
+      message:
+        documentOutline.length > 0
+          ? `已识别目录结构（${documentOutline.length} 个章节），将按材料章节顺序生成`
+          : cleanedText.length !== text.length
+            ? '已净化输入噪声内容'
+            : '输入预处理完成'
     });
     const fullUserMessage = REQUIREMENT_USER_MESSAGE_PREFIX + cleanedText;
     const singlePassFits =
-      estimateTokensApprox(systemPrompt) + estimateTokensApprox(fullUserMessage) <= Math.max(2000, maxInputTokens - 500);
+      estimateTokensApprox(effectiveSystemPrompt) + estimateTokensApprox(fullUserMessage) <=
+      Math.max(2000, maxInputTokens - 500);
+    const forceChunked = shouldForceChunkedRequirementGeneration(documentOutline, maxTokens);
 
-    if (singlePassFits) {
+    if (forceChunked && documentOutline.length > 0) {
+      console.log(
+        `[RequirementDoc] 目录章节 ${documentOutline.length} 项，预估输出超出单次 max_tokens=${maxTokens}，启用分片生成`
+      );
+    }
+
+    if (singlePassFits && !forceChunked) {
       options?.onProgress?.({
         phase: 'generating',
-        message: 'AI 正在生成结构化需求文档，请耐心等待...'
+        message:
+          documentOutline.length > 0
+            ? `AI 正在按目录顺序生成需求文档（${documentOutline.length} 个章节）…`
+            : 'AI 正在生成结构化需求文档，请耐心等待...'
       });
       if (logScene) {
         logRequirementDocLLM(logScene, selectedModel, [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: effectiveSystemPrompt },
           { role: 'user', content: fullUserMessage },
         ]);
       }
@@ -939,20 +1556,52 @@ export class AnalysisService {
         selectedModel,
         maxTokens,
         timeoutConfig: config.timeout,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         userMessage: fullUserMessage,
         logScene,
       });
-      const content = await this.continueRequirementOutputIfNeeded({
+      let content = await this.continueRequirementOutputIfNeeded({
         apiEndpoint,
         apiKey,
         selectedModel,
         maxTokens,
         timeoutConfig: config.timeout,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         initialContent: firstPass.content,
         initialFinishReason: firstPass.finishReason,
-        logScene: logScene ? `${logScene}:single` : undefined
+        logScene: logScene ? `${logScene}:single` : undefined,
+        documentOutline,
+      });
+      content = await this.fillMissingOutlineSectionsIfNeeded({
+        apiEndpoint,
+        apiKey,
+        selectedModel,
+        maxTokens,
+        timeoutConfig: config.timeout,
+        systemPrompt: effectiveSystemPrompt,
+        content,
+        sourceText: cleanedText,
+        documentOutline,
+        logScene,
+        onProgress: options?.onProgress,
+      });
+      content = reorderContentByDocumentOutline(content, documentOutline, {
+        sourceTitle: options?.sourceTitle,
+        sourceText: cleanedText,
+      });
+      if (documentOutline.length > 0) {
+        console.log(`[RequirementDoc] 已按材料目录顺序重排最终章节（章节数=${documentOutline.length}）`);
+      }
+      content = await this.appendMissingTailSectionsIfNeeded({
+        apiEndpoint,
+        apiKey,
+        selectedModel,
+        maxTokens,
+        timeoutConfig: config.timeout,
+        systemPrompt: effectiveSystemPrompt,
+        mergedContent: content,
+        sourceDrafts: [firstPass.content],
+        logScene,
       });
       console.log(`✅ AI 需求文档生成成功，使用模型: ${selectedModel}`);
       options?.onProgress?.({
@@ -962,12 +1611,63 @@ export class AnalysisService {
       return { content, inputTruncated: false };
     }
 
-    let chunks = splitTextForRequirementChunks({
-      text: cleanedText,
-      systemPrompt,
-      userPrefix: REQUIREMENT_CHUNK_PROMPT_PREFIX,
-      maxInputTokens
-    });
+    const margin = 500;
+    const maxTotal = Math.max(2000, maxInputTokens - margin);
+    const baseTokens =
+      estimateTokensApprox(effectiveSystemPrompt) + estimateTokensApprox(chunkPromptPrefix);
+    const maxCharsByWindow = Math.max(20000, (maxTotal - baseTokens) * 2);
+    const preferredCharsFromEnv = parseInt(process.env.REQUIREMENT_DOC_CHUNK_PREFERRED_MAX_CHARS || '90000', 10);
+    const preferredChars =
+      Number.isFinite(preferredCharsFromEnv) && preferredCharsFromEnv >= 20000
+        ? preferredCharsFromEnv
+        : 90000;
+    const outlineChunkMaxChars = Math.max(20000, Math.min(maxCharsByWindow, preferredChars));
+
+    let chunks =
+      documentOutline.length > 0
+        ? splitTextByDocumentOutline({
+            text: cleanedText,
+            outline: documentOutline,
+            maxChars: outlineChunkMaxChars,
+          })
+        : null;
+    const outlineGroupMinSections = parseInt(
+      process.env.REQUIREMENT_DOC_OUTLINE_GROUP_SPLIT_MIN_SECTIONS || '20',
+      10
+    );
+    const groupSplitMin =
+      Number.isFinite(outlineGroupMinSections) && outlineGroupMinSections >= 5
+        ? outlineGroupMinSections
+        : 20;
+
+    const outlineMatchedChunks = Boolean(chunks && chunks.length > 0);
+
+    if (outlineMatchedChunks) {
+      console.log(
+        `[RequirementDoc] 按目录结构切分：${chunks.length} 个分片（章节数 ${documentOutline.length}）`
+      );
+    } else {
+      chunks = splitTextForRequirementChunks({
+        text: cleanedText,
+        systemPrompt: effectiveSystemPrompt,
+        userPrefix: chunkPromptPrefix,
+        maxInputTokens
+      });
+    }
+
+    if (!outlineMatchedChunks && documentOutline.length >= groupSplitMin && chunks.length <= 1) {
+      const grouped = splitTextByOutlineGroups({
+        text: cleanedText,
+        outline: documentOutline,
+        maxChars: outlineChunkMaxChars,
+      });
+      if (grouped.length > 1) {
+        chunks = grouped;
+        console.log(
+          `[RequirementDoc] 正文标题匹配不足，已按目录分组切分：${chunks.length} 个分片（每片约 ${Math.ceil(documentOutline.length / chunks.length)} 节）`
+        );
+      }
+    }
     const minChunkCountRaw = parseInt(process.env.REQUIREMENT_DOC_MIN_CHUNK_COUNT || '6', 10);
     const minChunkCount = Number.isFinite(minChunkCountRaw) && minChunkCountRaw >= 2 ? minChunkCountRaw : 6;
     const minChunkTriggerCharsRaw = parseInt(process.env.REQUIREMENT_DOC_MIN_CHUNK_TRIGGER_CHARS || '300000', 10);
@@ -989,14 +1689,18 @@ export class AnalysisService {
       total: chunks.length,
       // message: `已切分为 ${chunks.length} 个分片`
     });
-    const inputTruncated = true;
+    const inputTruncated = !singlePassFits;
+    const mappingOverride = parseJsonRecordEnv(inputLimits?.modelContextWindowsJson);
+    const contextWindow = estimateContextWindowTokensByModel(selectedModel, mappingOverride);
+    const preferredChunkChars = parseInt(process.env.REQUIREMENT_DOC_CHUNK_PREFERRED_MAX_CHARS || '90000', 10);
+    const chunkLogMessage =
+      `[RequirementDoc] ${inputTruncated ? '输入超窗' : '目录/输出规模触发'}，启用分片生成` +
+      `（contextWindow≈${contextWindow} max_tokens=${maxTokens} maxInput≈${maxInputTokens} preferredChunkChars≈${Number.isFinite(preferredChunkChars) ? preferredChunkChars : 90000}）` +
+      `原始字符数=${text.length} 净化后字符数=${cleanedText.length} 分片数=${chunks.length}`;
     if (inputTruncated) {
-      const mappingOverride = parseJsonRecordEnv(inputLimits?.modelContextWindowsJson);
-      const contextWindow = estimateContextWindowTokensByModel(selectedModel, mappingOverride);
-      const preferredChunkChars = parseInt(process.env.REQUIREMENT_DOC_CHUNK_PREFERRED_MAX_CHARS || '90000', 10);
-      console.warn(
-        `[RequirementDoc] 输入超窗，启用分片生成（contextWindow≈${contextWindow} max_tokens=${maxTokens} maxInput≈${maxInputTokens} preferredChunkChars≈${Number.isFinite(preferredChunkChars) ? preferredChunkChars : 90000}）原始字符数=${text.length} 净化后字符数=${cleanedText.length} 分片数=${chunks.length}`
-      );
+      console.warn(chunkLogMessage);
+    } else {
+      console.log(chunkLogMessage);
     }
 
     const chunkOutputs: string[] = [];
@@ -1004,12 +1708,12 @@ export class AnalysisService {
       const chunkText = chunks[i];
       const chunkScene = logScene ? `${logScene}:chunk-${i + 1}/${chunks.length}` : undefined;
       const chunkUserMessage =
-        `${REQUIREMENT_CHUNK_PROMPT_PREFIX}[分片 ${i + 1}/${chunks.length}]\n` +
+        `${chunkPromptPrefix}[分片 ${i + 1}/${chunks.length}]\n` +
         `${chunkText}\n\n` +
         '请输出该分片的结构化需求要点，保留可追溯信息，避免与其他未知分片相关的推断。';
       if (chunkScene) {
         logRequirementDocLLM(chunkScene, selectedModel, [
-          { role: 'system', content: systemPrompt },
+          { role: 'system', content: effectiveSystemPrompt },
           { role: 'user', content: chunkUserMessage },
         ]);
       }
@@ -1019,7 +1723,7 @@ export class AnalysisService {
         selectedModel,
         maxTokens,
         timeoutConfig: config.timeout,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         userMessage: chunkUserMessage,
         logScene: chunkScene,
       });
@@ -1029,7 +1733,7 @@ export class AnalysisService {
         selectedModel,
         maxTokens,
         timeoutConfig: config.timeout,
-        systemPrompt,
+        systemPrompt: effectiveSystemPrompt,
         initialContent: partialResp.content,
         initialFinishReason: partialResp.finishReason,
         logScene: chunkScene
@@ -1045,69 +1749,108 @@ export class AnalysisService {
       });
     }
 
-    let drafts = [...chunkOutputs];
-    let mergeRound = 0;
-    while (drafts.length > 1) {
-      mergeRound += 1;
-      const batches = splitDraftsForMergeBatches({
-        drafts,
-        systemPrompt,
-        mergePrefix: REQUIREMENT_MERGE_PROMPT_PREFIX,
-        maxInputTokens
+    const deterministicOutlineMerge = parseBooleanEnv(
+      process.env.REQUIREMENT_DOC_DETERMINISTIC_OUTLINE_MERGE,
+      true
+    );
+    let mergedContent: string;
+
+    if (documentOutline.length > 0 && deterministicOutlineMerge) {
+      options?.onProgress?.({
+        phase: 'merging',
+        current: chunks.length,
+        total: chunks.length,
+        message: '正在按目录顺序抽取并合并分片结果'
       });
-      const mergedRound: string[] = [];
-
-      for (let i = 0; i < batches.length; i++) {
-        options?.onProgress?.({
-          phase: 'merging',
-          current: i + 1,
-          total: batches.length,
-          message: `正在进行第 ${mergeRound} 轮合并（${i + 1}/${batches.length}）`
+      mergedContent = mergeOutlineChunksDeterministically(chunkOutputs, documentOutline);
+      console.log(
+        `[RequirementDoc] 目录分片采用确定性抽取合并，跳过 LLM 重写合并，保留目录章节细节并清理分片封面/尾部（分片数=${chunkOutputs.length}）`
+      );
+    } else {
+      let drafts = [...chunkOutputs];
+      let mergeRound = 0;
+      while (drafts.length > 1) {
+        mergeRound += 1;
+        const batches = splitDraftsForMergeBatches({
+          drafts,
+          systemPrompt: effectiveSystemPrompt,
+          mergePrefix: mergePromptPrefix,
+          maxInputTokens
         });
-        const mergeScene = logScene ? `${logScene}:merge-r${mergeRound}-${i + 1}/${batches.length}` : undefined;
-        const mergeUserMessage = `${REQUIREMENT_MERGE_PROMPT_PREFIX}${batches[i].join('\n\n---\n\n')}`;
-        if (mergeScene) {
-          logRequirementDocLLM(mergeScene, selectedModel, [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: mergeUserMessage },
-          ]);
+        const mergedRound: string[] = [];
+
+        for (let i = 0; i < batches.length; i++) {
+          options?.onProgress?.({
+            phase: 'merging',
+            current: i + 1,
+            total: batches.length,
+            message: `正在进行第 ${mergeRound} 轮合并（${i + 1}/${batches.length}）`
+          });
+          const mergeScene = logScene ? `${logScene}:merge-r${mergeRound}-${i + 1}/${batches.length}` : undefined;
+          const mergeUserMessage = `${mergePromptPrefix}${batches[i].join('\n\n---\n\n')}`;
+          if (mergeScene) {
+            logRequirementDocLLM(mergeScene, selectedModel, [
+              { role: 'system', content: effectiveSystemPrompt },
+              { role: 'user', content: mergeUserMessage },
+            ]);
+          }
+          const mergeResp = await this.callRequirementModelOnce({
+            apiEndpoint,
+            apiKey,
+            selectedModel,
+            maxTokens,
+            timeoutConfig: config.timeout,
+            systemPrompt: effectiveSystemPrompt,
+            userMessage: mergeUserMessage,
+            logScene: mergeScene,
+          });
+          const mergedPart = await this.continueRequirementOutputIfNeeded({
+            apiEndpoint,
+            apiKey,
+            selectedModel,
+            maxTokens,
+            timeoutConfig: config.timeout,
+            systemPrompt: effectiveSystemPrompt,
+            initialContent: mergeResp.content,
+            initialFinishReason: mergeResp.finishReason,
+            logScene: mergeScene
+          });
+          mergedRound.push(mergedPart);
         }
-        const mergeResp = await this.callRequirementModelOnce({
-          apiEndpoint,
-          apiKey,
-          selectedModel,
-          maxTokens,
-          timeoutConfig: config.timeout,
-          systemPrompt,
-          userMessage: mergeUserMessage,
-          logScene: mergeScene,
-        });
-        const mergedPart = await this.continueRequirementOutputIfNeeded({
-          apiEndpoint,
-          apiKey,
-          selectedModel,
-          maxTokens,
-          timeoutConfig: config.timeout,
-          systemPrompt,
-          initialContent: mergeResp.content,
-          initialFinishReason: mergeResp.finishReason,
-          logScene: mergeScene
-        });
-        mergedRound.push(mergedPart);
-      }
 
-      drafts = mergedRound;
-      console.log(`[RequirementDoc] 合并轮次完成 round=${mergeRound} remain=${drafts.length}`);
-      if (mergeRound >= 6) break;
+        drafts = mergedRound;
+        console.log(`[RequirementDoc] 合并轮次完成 round=${mergeRound} remain=${drafts.length}`);
+        if (mergeRound >= 6) break;
+      }
+      mergedContent = drafts.join('\n\n');
     }
-    let mergedContent = drafts.join('\n\n');
+    mergedContent = await this.fillMissingOutlineSectionsIfNeeded({
+      apiEndpoint,
+      apiKey,
+      selectedModel,
+      maxTokens,
+      timeoutConfig: config.timeout,
+      systemPrompt: effectiveSystemPrompt,
+      content: mergedContent,
+      sourceText: cleanedText,
+      documentOutline,
+      logScene,
+      onProgress: options?.onProgress,
+    });
+    mergedContent = reorderContentByDocumentOutline(mergedContent, documentOutline, {
+      sourceTitle: options?.sourceTitle,
+      sourceText: cleanedText,
+    });
+    if (documentOutline.length > 0) {
+      console.log(`[RequirementDoc] 已按材料目录顺序重排最终章节（章节数=${documentOutline.length}）`);
+    }
     mergedContent = await this.appendMissingTailSectionsIfNeeded({
       apiEndpoint,
       apiKey,
       selectedModel,
       maxTokens,
       timeoutConfig: config.timeout,
-      systemPrompt,
+      systemPrompt: effectiveSystemPrompt,
       mergedContent,
       sourceDrafts: chunkOutputs,
       logScene

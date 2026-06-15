@@ -272,6 +272,7 @@ export interface TestModule {
   description: string;
   priority: 'high' | 'medium' | 'low';
   relatedSections: string[]; // 关联的章节ID，如 ["1.1", "1.2"]
+  coveredRequirementRefs?: string[]; // 覆盖的需求编号，如 ["FR-001", "FR-C-001"]
   testPurposes?: TestPurpose[]; // 可选，阶段2生成后才有
 }
 

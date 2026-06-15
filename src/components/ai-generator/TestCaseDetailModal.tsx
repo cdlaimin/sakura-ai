@@ -8,7 +8,7 @@ import { requirementDocService, RequirementDoc } from '../../services/requiremen
 import { marked } from 'marked';
 import { showToast } from '../../utils/toast';
 import { TestStepsEditor, parseStepsFromString, formatStepsToString, TestStep } from '../test-case/TestStepsEditor';
-import { getCaseTypeInfo, type CaseType } from '../../utils/caseTypeHelper';
+import { getCaseTypeInfo, getAllCaseTypes, type CaseType } from '../../utils/caseTypeHelper';
 import { scrollToRequirementSectionInContainer } from '../../utils/requirementDocNavigation';
 
 const { TextArea } = Input;
@@ -582,22 +582,15 @@ export function TestCaseDetailModal({
                   <select
                     value={editedCase?.caseType || testCase?.caseType || 'FULL'}
                     onChange={(e) => {
-                      const value = e.target.value as 'SMOKE' | 'FULL';
-                      updateField('caseType', value);
+                      updateField('caseType', e.target.value as CaseType);
                     }}
-                    className="w-32 px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
+                    className="w-36 px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500 bg-white"
                     title="选择用例类型"
                     aria-label="选择用例类型"
                   >
-                    <option value="SMOKE">🔥 冒烟用例</option>
-                    <option value="FULL">📋 全量用例</option>
-                    <option value="ABNORMAL">🚨 异常用例</option>
-                    <option value="BOUNDARY">🔍 边界用例</option>
-                    <option value="PERFORMANCE">⚡ 性能用例</option>
-                    <option value="SECURITY">🔒 安全用例</option>
-                    <option value="USABILITY">👍 可用性用例</option>
-                    <option value="COMPATIBILITY">🔄 兼容性用例</option>
-                    <option value="RELIABILITY">🔄 可靠性用例</option>
+                    {getAllCaseTypes().map(({ value, label }) => (
+                      <option key={value} value={value}>{label}用例</option>
+                    ))}
                   </select>
                 ) : (
                   currentCase.caseType && (() => {

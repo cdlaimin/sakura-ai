@@ -225,9 +225,9 @@ export class ErrorHandler {
         ];
       case 'maxTokens':
         return [
-          '最大令牌数应在1-8000之间',
-          '较小的值可以节省成本',
-          '复杂任务可能需要更多令牌'
+          'Max Tokens必须是大于0的整数',
+          '较大的值会增加响应时间和成本',
+          '实际可用上限取决于当前模型和API提供商'
         ];
       default:
         return ['请检查输入值是否正确'];
