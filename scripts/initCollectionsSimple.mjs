@@ -9,7 +9,14 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
-const EMBEDDING_DIMENSION = 1536; // Google Gemini embedding dimension
+const EMBEDDING_DIMENSION = (() => {
+  const explicit = parseInt(process.env.EMBEDDING_DIMENSION || '', 10);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const provider = process.env.EMBEDDING_PROVIDER || 'gemini';
+  if (provider === 'gemini') return 768;
+  if (provider === 'aliyun') return 1024;
+  return 1536;
+})();
 
 async function main() {
   try {

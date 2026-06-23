@@ -3,6 +3,9 @@
  */
 
 import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 

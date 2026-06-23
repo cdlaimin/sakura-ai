@@ -4,8 +4,11 @@
  */
 
 import fetch from 'node-fetch';
+import dotenv from 'dotenv';
 
-const QDRANT_URL = 'http://localhost:6333';
+dotenv.config();
+
+const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 const COLLECTION_NAME = 'test_knowledge';
 
 async function fixQdrantCollection() {

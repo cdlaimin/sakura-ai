@@ -4,6 +4,7 @@
 
 // 🔥 使用统一的 API 配置
 import { getApiBaseUrl } from '../config/api';
+import type { KnowledgeSettings } from './settingsService';
 const API_BASE_URL = getApiBaseUrl('/api/v1/knowledge');
 const TOKEN_KEY = 'authToken';
 
@@ -72,7 +73,7 @@ export interface KnowledgeStats {
 export interface BatchImportResult {
   success: number;
   failed: number;
-  errors: string[];
+  errors: Array<string | { index: number; title: string; error: string }>;
 }
 
 // 知识类别配置
@@ -84,6 +85,46 @@ export const KNOWLEDGE_CATEGORIES = [
 ];
 
 class KnowledgeService {
+  async getKnowledgeConfig(): Promise<KnowledgeSettings> {
+    const response = await fetch('/api/config/knowledge', {
+      headers: getAuthHeaders()
+    });
+    const result = await handleResponse(response);
+    return result.data;
+  }
+
+  async saveKnowledgeConfig(config: KnowledgeSettings): Promise<KnowledgeSettings> {
+    const response = await fetch('/api/config/knowledge', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(config)
+    });
+    const result = await handleResponse(response);
+    return result.data;
+  }
+
+  async testKnowledgeConfig(config: KnowledgeSettings): Promise<any> {
+    const response = await fetch('/api/config/knowledge/test-connection', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(config)
+    });
+    return handleResponse(response);
+  }
+
+  private normalizeStats(data: any): KnowledgeStats {
+    const byCategory = data.byCategory || data.categoryCounts || {};
+    return {
+      totalKnowledge: data.totalKnowledge ?? data.totalCount ?? 0,
+      byCategory: {
+        business_rule: byCategory.business_rule || 0,
+        test_pattern: byCategory.test_pattern || 0,
+        pitfall: byCategory.pitfall || 0,
+        risk_scenario: byCategory.risk_scenario || 0
+      }
+    };
+  }
+
   /**
    * 获取所有知识库集合列表
    */
@@ -101,7 +142,12 @@ class KnowledgeService {
     const response = await fetch(`${API_BASE_URL}/stats`, {
       headers: getAuthHeaders()
     });
-    return handleResponse(response);
+    const data = await handleResponse(response);
+    const statsList = Array.isArray(data.stats) ? data.stats : [];
+    return statsList.map((item: any) => ({
+      systemName: item.systemName,
+      stats: this.normalizeStats(item)
+    }));
   }
 
   /**
@@ -111,7 +157,32 @@ class KnowledgeService {
     const response = await fetch(`${API_BASE_URL}/${encodeURIComponent(systemName)}/stats`, {
       headers: getAuthHeaders()
     });
-    return handleResponse(response);
+    return this.normalizeStats(await handleResponse(response));
+  }
+
+  /**
+   * 获取指定系统的知识列表，不依赖语义搜索。
+   */
+  async listKnowledge(params: {
+    systemName: string;
+    category?: string;
+    businessDomain?: string;
+    limit?: number;
+  }): Promise<KnowledgeItem[]> {
+    const { systemName, ...rest } = params;
+    const queryParams = new URLSearchParams();
+    Object.entries(rest).forEach(([key, value]) => {
+      if (value !== undefined && value !== '') {
+        queryParams.append(key, String(value));
+      }
+    });
+
+    const response = await fetch(
+      `${API_BASE_URL}/${encodeURIComponent(systemName)}/list?${queryParams}`,
+      { headers: getAuthHeaders() }
+    );
+    const data = await handleResponse(response);
+    return data.items || [];
   }
 
   /**
@@ -176,7 +247,10 @@ class KnowledgeService {
     const response = await fetch(`${API_BASE_URL}/test-search`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify(params)
+      body: JSON.stringify({
+        ...params,
+        testQuery: params.query
+      })
     });
     return handleResponse(response);
   }
@@ -190,6 +264,35 @@ class KnowledgeService {
       headers: getAuthHeaders(),
       body: JSON.stringify(knowledge)
     });
+    return handleResponse(response);
+  }
+
+  /**
+   * 更新单条知识
+   */
+  async updateKnowledge(systemName: string, knowledgeId: string, knowledge: KnowledgeItem): Promise<void> {
+    const response = await fetch(
+      `${API_BASE_URL}/${encodeURIComponent(systemName)}/items/${encodeURIComponent(knowledgeId)}`,
+      {
+        method: 'PUT',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(knowledge)
+      }
+    );
+    return handleResponse(response);
+  }
+
+  /**
+   * 删除单条知识
+   */
+  async deleteKnowledge(systemName: string, knowledgeId: string): Promise<void> {
+    const response = await fetch(
+      `${API_BASE_URL}/${encodeURIComponent(systemName)}/items/${encodeURIComponent(knowledgeId)}`,
+      {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      }
+    );
     return handleResponse(response);
   }
 

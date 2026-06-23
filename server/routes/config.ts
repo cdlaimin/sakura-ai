@@ -5,6 +5,9 @@ import { modelRegistry } from '../../src/services/modelRegistry.js';
 import { ProxyAgent } from 'undici';
 import { elementCache } from '../services/elementCache.js';
 import { aiCacheManager } from '../services/aiCacheManager.js'; // 🔥 新增：AI缓存管理器
+import { QdrantClient } from '@qdrant/js-client-rest';
+import OpenAI from 'openai';
+import type { KnowledgeSettings } from '../../src/services/settingsService.js';
 
 const router = Router();
 
@@ -90,6 +93,120 @@ router.post('/llm', async (req, res) => {
 });
 
 // 获取完整配置
+router.get('/knowledge', async (req, res) => {
+  try {
+    const knowledgeSettings = await getSettingsService().getKnowledgeSettings();
+    res.json({
+      success: true,
+      data: knowledgeSettings
+    });
+  } catch (error: any) {
+    console.error('Failed to get knowledge settings:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || '获取知识库配置失败'
+    });
+  }
+});
+
+router.post('/knowledge', async (req, res) => {
+  try {
+    const knowledgeSettings = req.body as KnowledgeSettings;
+    if (!knowledgeSettings || typeof knowledgeSettings !== 'object') {
+      return res.status(400).json({
+        success: false,
+        error: '无效的知识库配置'
+      });
+    }
+
+    const savedSettings = await getSettingsService().saveKnowledgeSettings(knowledgeSettings);
+    res.json({
+      success: true,
+      message: '知识库配置保存成功',
+      data: savedSettings
+    });
+  } catch (error: any) {
+    console.error('Failed to save knowledge settings:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || '保存知识库配置失败'
+    });
+  }
+});
+
+router.post('/knowledge/test-connection', async (req, res) => {
+  const startTime = Date.now();
+
+  try {
+    const settings = (req.body && typeof req.body === 'object')
+      ? req.body as KnowledgeSettings
+      : await getSettingsService().getKnowledgeSettings();
+
+    const qdrant = new QdrantClient({
+      url: settings.qdrantUrl,
+      checkCompatibility: false
+    });
+    const collections = await qdrant.getCollections();
+
+    let embeddingDimension = 0;
+    if (settings.embeddingProvider === 'gemini') {
+      const apiKey = settings.embeddingApiKey;
+      if (!apiKey) {
+        throw new Error('Gemini Embedding 需要配置 API Key');
+      }
+      const model = settings.embeddingModel || 'text-embedding-004';
+      const baseUrl = (settings.embeddingApiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+      const response = await fetch(`${baseUrl}/models/${model}:embedContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: {
+            parts: [{ text: 'connection test' }]
+          }
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`Embedding API 调用失败 (${response.status}): ${await response.text()}`);
+      }
+      const data = await response.json();
+      embeddingDimension = data?.embedding?.values?.length || 0;
+    } else {
+      const openai = new OpenAI({
+        baseURL: settings.embeddingApiBaseUrl,
+        apiKey: settings.embeddingApiKey || 'not-required'
+      });
+      const response = await openai.embeddings.create({
+        model: settings.embeddingModel,
+        input: 'connection test'
+      });
+      embeddingDimension = response.data?.[0]?.embedding?.length || 0;
+    }
+
+    if (!embeddingDimension) {
+      throw new Error('Embedding API 返回格式异常，未获取到向量');
+    }
+
+    res.json({
+      success: true,
+      message: '知识库连接测试成功',
+      data: {
+        qdrantUrl: settings.qdrantUrl,
+        collectionCount: collections.collections.length,
+        embeddingProvider: settings.embeddingProvider,
+        embeddingModel: settings.embeddingModel,
+        embeddingDimension
+      },
+      responseTime: Date.now() - startTime
+    });
+  } catch (error: any) {
+    res.status(400).json({
+      success: false,
+      error: error.message || '知识库连接测试失败',
+      responseTime: Date.now() - startTime
+    });
+  }
+});
+
 router.get('/all', async (req, res) => {
   try {
     const settings = await getSettingsService().getSettings();

@@ -577,11 +577,16 @@ class FunctionalTestCaseService {
   /**
    * 🆕 阶段1：智能测试场景拆分（新接口）
    */
-  async analyzeTestScenarios(requirementDoc: string, sessionId: string) {
+  async analyzeTestScenarios(
+    requirementDoc: string,
+    sessionId: string,
+    systemName?: string,
+    moduleName?: string
+  ) {
     const response = await fetch(`${API_BASE_URL}/functional-test-cases/analyze-scenarios`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ requirementDoc, sessionId })
+      body: JSON.stringify({ requirementDoc, sessionId, systemName, moduleName })
     });
 
     return handleResponse(response);
@@ -591,11 +596,16 @@ class FunctionalTestCaseService {
    * 🆕 阶段1：智能测试模块拆分（兼容性接口）
    * @deprecated 使用 analyzeTestScenarios 代替
    */
-  async analyzeTestModules(requirementDoc: string, sessionId: string) {
+  async analyzeTestModules(
+    requirementDoc: string,
+    sessionId: string,
+    systemName?: string,
+    moduleName?: string
+  ) {
     const response = await fetch(`${API_BASE_URL}/functional-test-cases/analyze-modules`, {
       method: 'POST',
       headers: getAuthHeaders(),
-      body: JSON.stringify({ requirementDoc, sessionId })
+      body: JSON.stringify({ requirementDoc, sessionId, systemName, moduleName })
     });
 
     return handleResponse(response);
@@ -610,7 +620,9 @@ class FunctionalTestCaseService {
     scenarioDescription: string,
     requirementDoc: string,
     relatedSections: string[],
-    sessionId: string
+    sessionId: string,
+    systemName?: string,
+    moduleName?: string
   ) {
     const response = await fetch(`${API_BASE_URL}/functional-test-cases/generate-points-for-scenario`, {
       method: 'POST',
@@ -621,7 +633,9 @@ class FunctionalTestCaseService {
         scenarioDescription,
         requirementDoc,
         relatedSections,
-        sessionId
+        sessionId,
+        systemName,
+        moduleName
       })
     });
 

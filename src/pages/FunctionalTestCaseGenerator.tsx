@@ -838,7 +838,12 @@ export function FunctionalTestCaseGenerator() {
 
     try {
       console.log(`🎯 阶段1：${isRegenerate ? '重新' : '开始'}智能测试场景拆分...`);
-      const result = await functionalTestCaseService.analyzeTestScenarios(requirementDoc, sessionId);
+      const result = await functionalTestCaseService.analyzeTestScenarios(
+        requirementDoc,
+        sessionId,
+        projectInfo.systemName || '',
+        projectInfo.moduleName || ''
+      );
       console.log('🚀 测试场景拆分结果:', result);
       console.log('✅ 测试场景拆分完成:', result.data.scenarios);
       const scenarios = result.data.scenarios || result.data.modules || [];
@@ -895,7 +900,9 @@ export function FunctionalTestCaseGenerator() {
         scenario.description,
         requirementDoc,
         scenario.relatedSections,
-        sessionId
+        sessionId,
+        projectInfo.systemName || '',
+        projectInfo.moduleName || ''
       );
 
       console.log('✅ 测试点生成完成:', result.data.testPoints);

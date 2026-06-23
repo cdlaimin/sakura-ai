@@ -4,7 +4,7 @@ import { llmConfigManager } from '../../src/services/llmConfigManager.js';
 import { modelRegistry } from '../../src/services/modelRegistry.js';
 import type { LLMConfig } from './aiParser.js';
 import { ProxyAgent } from 'undici';
-import { TestCaseKnowledgeBase } from './testCaseKnowledgeBase.js';
+import { TestCaseKnowledgeBase, type SearchResult } from './testCaseKnowledgeBase.js';
 import { getWebRequirementPrompt } from '../prompts/web-requirement.prompt.js';
 import { getMobileRequirementPrompt } from '../prompts/mobile-requirement.prompt.js';
 import { getTextRequirementPrompt, type ContentSourceType } from '../prompts/text-requirement.prompt.js';
@@ -1560,7 +1560,7 @@ ${getCommonSystemInstructions()}`;
           console.log(`   📈 总计检索到: ${totalKnowledge}条相关知识`);
 
           console.log(`\n🔧 [RAG-Step4] 格式化知识上下文，准备注入AI提示词...`);
-          knowledgeContext = this.buildKnowledgeContext(knowledgeResults);
+          knowledgeContext = this.buildTestCaseKnowledgeContext(knowledgeResults);
           console.log(`✅ [RAG-Step4] 知识上下文构建完成 (长度: ${knowledgeContext.length}字符)`);
 
           console.log(`\n🎯 [RAG模式] 将使用知识库增强模式生成测试用例`);
@@ -2416,7 +2416,11 @@ ${existingCaseNames || '无'}
    * 🆕 阶段1：智能测试场景拆分
    * 根据需求文档，识别不同的测试场景（查询条件、列表展示、操作按钮、页面布局等）
    */
-  async analyzeTestScenarios(requirementDoc: string): Promise<TestScenario[]> {
+  async analyzeTestScenarios(
+    requirementDoc: string,
+    systemName?: string,
+    moduleName?: string
+  ): Promise<TestScenario[]> {
     console.log('\n╔═══════════════════════════════════════════════════════════════╗');
     console.log('║       🎯 阶段1：智能测试场景拆分                                ║');
     console.log('╚═══════════════════════════════════════════════════════════════╝\n');
@@ -2441,6 +2445,33 @@ ${existingCaseNames || '无'}
 
     console.log(`   页面模式: ${isModifyMode ? '修改页面' : '新增页面'}`);
     console.log(`   需求规模: ${requirementRefs.length}个唯一需求编号, ${sectionHeadings.length}个标题章节, 建议场景数 ${recommendedScenarioMin}-${recommendedScenarioMax}`);
+
+    let scenarioKnowledgeContext = '';
+    try {
+      const knowledgeBase = this.getKnowledgeBase(systemName);
+      const queryText = [
+        systemName ? `System: ${systemName}` : '',
+        moduleName ? `Module: ${moduleName}` : '',
+        sectionHeadings.slice(0, 30).join('\n'),
+        requirementDoc.substring(0, 1500)
+      ].filter(Boolean).join('\n');
+
+      console.log(`[RAG-Scenarios] Searching lightweight knowledge for scenario planning (system: ${systemName || 'default'})`);
+      const knowledgeResults = await knowledgeBase.searchByCategory({
+        query: queryText,
+        topK: 2,
+        scoreThreshold: 0.5
+      });
+      scenarioKnowledgeContext = this.buildScenarioKnowledgeContext(knowledgeResults);
+      if (scenarioKnowledgeContext) {
+        console.log(`[RAG-Scenarios] Knowledge context ready (${scenarioKnowledgeContext.length} chars)`);
+        this.logScenarioKnowledgeContext(knowledgeResults, scenarioKnowledgeContext);
+      } else {
+        console.log('[RAG-Scenarios] No relevant scenario planning knowledge found');
+      }
+    } catch (error: any) {
+      console.warn(`[RAG-Scenarios] Knowledge search failed, fallback to normal scenario planning: ${error?.message || error}`);
+    }
 
     const systemPrompt = `你是一个测试策略规划专家。你的任务是分析需求文档，将测试工作拆分为不同的测试场景。
 
@@ -2595,6 +2626,7 @@ ${isModifyMode ? `
 ## 📋 需求文档内容
 ${requirementDoc}
 ${requirementRefsBlock}
+${scenarioKnowledgeContext}
 
 ---
 
@@ -2792,8 +2824,12 @@ ${isModifyMode ? `
    * 兼容性方法：保留旧接口名称
    * @deprecated 使用 analyzeTestScenarios 代替
    */
-  async analyzeTestModules(requirementDoc: string): Promise<TestModule[]> {
-    return this.analyzeTestScenarios(requirementDoc);
+  async analyzeTestModules(
+    requirementDoc: string,
+    systemName?: string,
+    moduleName?: string
+  ): Promise<TestModule[]> {
+    return this.analyzeTestScenarios(requirementDoc, systemName, moduleName);
   }
 
   /**
@@ -2805,7 +2841,9 @@ ${isModifyMode ? `
     scenarioName: string,
     scenarioDescription: string,
     requirementDoc: string,
-    relatedSections: string[]
+    relatedSections: string[],
+    systemName?: string,
+    moduleName?: string
   ): Promise<TestPoint[]> {
     console.log(`\n╔═══════════════════════════════════════════════════════════════╗
 ║       🎯 阶段2：生成测试点 - ${scenarioName}
@@ -2822,6 +2860,33 @@ ${isModifyMode ? `
       .filter(Boolean)
       .join('\n\n');
     const scenarioRequirementContext = sectionContents || requirementDoc.substring(0, 4000);
+
+    let knowledgeContext = '';
+    try {
+      const knowledgeBase = this.getKnowledgeBase(systemName);
+      const queryText = [
+        scenarioName,
+        scenarioDescription,
+        moduleName ? `Module: ${moduleName}` : '',
+        scenarioRequirementContext.substring(0, 1200)
+      ].filter(Boolean).join('\n');
+
+      console.log(`[RAG-TestPoints] Searching knowledge base for scenario "${scenarioName}" (system: ${systemName || 'default'})`);
+      const knowledgeResults = await knowledgeBase.searchByCategory({
+        query: queryText,
+        topK: 3,
+        scoreThreshold: 0.5
+      });
+      knowledgeContext = this.buildTestPointKnowledgeContext(knowledgeResults);
+      if (knowledgeContext) {
+        console.log(`[RAG-TestPoints] Knowledge context ready (${knowledgeContext.length} chars)`);
+        this.logTestPointKnowledgeContext(knowledgeResults, knowledgeContext);
+      } else {
+        console.log('[RAG-TestPoints] No relevant knowledge found');
+      }
+    } catch (error: any) {
+      console.warn(`[RAG-TestPoints] Knowledge search failed, fallback to normal mode: ${error?.message || error}`);
+    }
 
     const systemPrompt = `你是一个测试点设计专家。你的任务是为指定的测试场景生成多个测试点（Test Point）。
 
@@ -3024,6 +3089,8 @@ ${isModifyMode ? `
 ${detectedRangesBlock}
 ## 相关需求内容
 ${scenarioRequirementContext}
+
+${knowledgeContext}
 
 ${isModifyMode ? `
 ⚠️ **这是修改页面模式：**
@@ -3345,7 +3412,7 @@ ${isHighRiskLoginScenario ? `
         topK: 3,
         scoreThreshold: 0.5
       });
-      knowledgeContext = this.buildKnowledgeContext(knowledgeResults);
+      knowledgeContext = this.buildTestCaseKnowledgeContext(knowledgeResults);
     } catch (error) {
       console.warn('知识库查询失败，使用普通模式');
     }
@@ -4704,7 +4771,15 @@ ${filteredCasesWithMark.map((tc, index) => `
     relatedSections: string[]
   ): Promise<TestCase> {
     // 先生成测试点
-    const testPoints = await this.generateTestPointsForScenario(purposeId, purposeName, purposeDescription, requirementDoc, relatedSections);
+    const testPoints = await this.generateTestPointsForScenario(
+      purposeId,
+      purposeName,
+      purposeDescription,
+      requirementDoc,
+      relatedSections,
+      systemName,
+      moduleName
+    );
     // 再生成测试用例
     return this.generateTestCase(purposeId, purposeName, purposeDescription, testPoints, requirementDoc, systemName, moduleName, relatedSections);
   }
@@ -4962,7 +5037,199 @@ ${requirementDoc.substring(0, 1500)}...
   /**
    * 构建知识库上下文（RAG增强）
    */
-  private buildKnowledgeContext(knowledgeResults: {
+  private buildTestPointKnowledgeContext(knowledgeResults: {
+    businessRules: SearchResult[];
+    testPatterns: SearchResult[];
+    pitfalls: SearchResult[];
+    riskScenarios: SearchResult[];
+  }): string {
+    const trimContent = (content: string, maxLength = 500) => {
+      const normalized = (content || '').trim();
+      return normalized.length > maxLength
+        ? `${normalized.slice(0, maxLength)}...`
+        : normalized;
+    };
+
+    const formatItems = (items: SearchResult[], limit = 3) =>
+      items.slice(0, limit)
+        .map((result, index) => {
+          const knowledge = result.knowledge;
+          const score = Number.isFinite(result.score)
+            ? `, similarity ${(result.score * 100).toFixed(1)}%`
+            : '';
+          return `${index + 1}. ${knowledge.title}${score}\n${trimContent(knowledge.content)}`;
+        })
+        .join('\n\n');
+
+    const blocks: string[] = [];
+
+    if (knowledgeResults.businessRules.length > 0) {
+      blocks.push(`## Business Rules From Knowledge Base
+Use these rules to add or refine test points. Do not contradict explicit requirements.
+${formatItems(knowledgeResults.businessRules)}`);
+    }
+
+    if (knowledgeResults.pitfalls.length > 0) {
+      blocks.push(`## Historical Pitfalls From Knowledge Base
+Convert these into regression, abnormal, boundary, state, permission, or security test points when relevant.
+${formatItems(knowledgeResults.pitfalls)}`);
+    }
+
+    if (knowledgeResults.riskScenarios.length > 0) {
+      blocks.push(`## Risk Scenarios From Knowledge Base
+Convert relevant risk scenarios into high risk test points.
+${formatItems(knowledgeResults.riskScenarios)}`);
+    }
+
+    if (knowledgeResults.testPatterns.length > 0) {
+      blocks.push(`## Test Patterns From Knowledge Base
+Use these patterns to improve coverage for boundary, abnormal, permission, state, security, and regression checks.
+${formatItems(knowledgeResults.testPatterns)}`);
+    }
+
+    if (blocks.length === 0) {
+      return '';
+    }
+
+    return [
+      '## RAG Knowledge Base Supplement For Test Point Design',
+      'The following knowledge is supplementary. Generate test points from it only when it is relevant to the current scenario and requirement context.',
+      'When a test point is mainly added because of this knowledge, set source="supplemental", sourceLabel="规则补充", and explain the supporting knowledge in sourceReason.',
+      blocks.join('\n\n')
+    ].join('\n\n');
+  }
+
+  private buildScenarioKnowledgeContext(knowledgeResults: {
+    businessRules: SearchResult[];
+    testPatterns: SearchResult[];
+    pitfalls: SearchResult[];
+    riskScenarios: SearchResult[];
+  }): string {
+    const summarize = (items: SearchResult[], limit = 2) =>
+      items.slice(0, limit)
+        .map((result, index) => {
+          const knowledge = result.knowledge;
+          const score = Number.isFinite(result.score)
+            ? `, similarity ${(result.score * 100).toFixed(1)}%`
+            : '';
+          const content = (knowledge.content || '').trim();
+          return `${index + 1}. ${knowledge.title}${score}\n${content.length > 260 ? `${content.slice(0, 260)}...` : content}`;
+        })
+        .join('\n\n');
+
+    const blocks: string[] = [];
+
+    if (knowledgeResults.riskScenarios.length > 0) {
+      blocks.push(`## High Risk Scenario Hints
+Consider whether these should become independent test scenarios or high-priority scenario boundaries.
+${summarize(knowledgeResults.riskScenarios)}`);
+    }
+
+    if (knowledgeResults.pitfalls.length > 0) {
+      blocks.push(`## Historically Missed Scenario Hints
+Use these as reminders for scenario splitting only when they match the current requirement.
+${summarize(knowledgeResults.pitfalls)}`);
+    }
+
+    if (knowledgeResults.testPatterns.length > 0) {
+      blocks.push(`## Common Test Pattern Hints
+Use these as lightweight scenario templates. Do not force unrelated templates into the output.
+${summarize(knowledgeResults.testPatterns)}`);
+    }
+
+    if (knowledgeResults.businessRules.length > 0) {
+      blocks.push(`## Business Rule Scenario Hints
+If these rules define distinct workflows, permissions, states, or risk boundaries, split them into clear scenarios.
+${summarize(knowledgeResults.businessRules)}`);
+    }
+
+    if (blocks.length === 0) {
+      return '';
+    }
+
+    return [
+      '## RAG Knowledge Base Supplement For Scenario Planning',
+      'The following knowledge is lightweight guidance for splitting scenarios. Requirements remain the source of truth.',
+      'Use it to avoid missing high-risk, historically missed, or commonly expected scenario boundaries. Do not create scenarios unrelated to the requirement document.',
+      blocks.join('\n\n')
+    ].join('\n\n');
+  }
+
+  private logScenarioKnowledgeContext(
+    knowledgeResults: {
+      businessRules: SearchResult[];
+      testPatterns: SearchResult[];
+      pitfalls: SearchResult[];
+      riskScenarios: SearchResult[];
+    },
+    scenarioKnowledgeContext: string
+  ): void {
+    const groups = [
+      ['business_rule', knowledgeResults.businessRules],
+      ['test_pattern', knowledgeResults.testPatterns],
+      ['pitfall', knowledgeResults.pitfalls],
+      ['risk_scenario', knowledgeResults.riskScenarios]
+    ] as const;
+
+    console.log('[RAG-Scenarios] Applied lightweight knowledge items:');
+    groups.forEach(([category, items]) => {
+      if (items.length === 0) {
+        console.log(`  - ${category}: none`);
+        return;
+      }
+
+      items.forEach((result, index) => {
+        const knowledge = result.knowledge;
+        const score = Number.isFinite(result.score)
+          ? `${(result.score * 100).toFixed(1)}%`
+          : 'n/a';
+        const contentPreview = (knowledge.content || '').replace(/\s+/g, ' ').slice(0, 160);
+        console.log(`  - ${category}[${index + 1}] score=${score} title="${knowledge.title}" domain="${knowledge.businessDomain}" tags=${JSON.stringify(knowledge.tags || [])}`);
+        console.log(`    contentPreview="${contentPreview}${knowledge.content && knowledge.content.length > 160 ? '...' : ''}"`);
+      });
+    });
+
+    console.log(`[RAG-Scenarios] Injected lightweight scenario context:\n${scenarioKnowledgeContext}`);
+  }
+
+  private logTestPointKnowledgeContext(
+    knowledgeResults: {
+      businessRules: SearchResult[];
+      testPatterns: SearchResult[];
+      pitfalls: SearchResult[];
+      riskScenarios: SearchResult[];
+    },
+    knowledgeContext: string
+  ): void {
+    const groups = [
+      ['business_rule', knowledgeResults.businessRules],
+      ['test_pattern', knowledgeResults.testPatterns],
+      ['pitfall', knowledgeResults.pitfalls],
+      ['risk_scenario', knowledgeResults.riskScenarios]
+    ] as const;
+
+    console.log('[RAG-TestPoints] Applied knowledge items:');
+    groups.forEach(([category, items]) => {
+      if (items.length === 0) {
+        console.log(`  - ${category}: none`);
+        return;
+      }
+
+      items.forEach((result, index) => {
+        const knowledge = result.knowledge;
+        const score = Number.isFinite(result.score)
+          ? `${(result.score * 100).toFixed(1)}%`
+          : 'n/a';
+        const contentPreview = (knowledge.content || '').replace(/\s+/g, ' ').slice(0, 180);
+        console.log(`  - ${category}[${index + 1}] score=${score} title="${knowledge.title}" domain="${knowledge.businessDomain}" tags=${JSON.stringify(knowledge.tags || [])}`);
+        console.log(`    contentPreview="${contentPreview}${knowledge.content && knowledge.content.length > 180 ? '...' : ''}"`);
+      });
+    });
+
+    console.log(`[RAG-TestPoints] Injected knowledge context:\n${knowledgeContext}`);
+  }
+
+  private buildTestCaseKnowledgeContext(knowledgeResults: {
     businessRules: any[];
     testPatterns: any[];
     pitfalls: any[];

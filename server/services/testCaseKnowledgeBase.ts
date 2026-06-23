@@ -5,6 +5,8 @@
 
 import { QdrantClient } from '@qdrant/js-client-rest';
 import OpenAI from 'openai';
+import { BackendSettingsService } from './settingsService.js';
+import type { KnowledgeSettings } from '../../src/services/settingsService.js';
 
 // 知识条目接口
 export interface KnowledgeItem {
@@ -15,6 +17,8 @@ export interface KnowledgeItem {
   businessDomain: string;  // 业务领域：订单管理、优惠促销等
   tags: string[];    // 标签
   metadata?: any;    // 额外元数据
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 // 检索结果接口
@@ -30,6 +34,8 @@ export class TestCaseKnowledgeBase {
   private systemName?: string; // 🔥 新增：系统名称
   private useGemini: boolean;
   private embeddingProvider: string;
+  private runtimeConfig: KnowledgeSettings;
+  private runtimeConfigKey = '';
 
   /**
    * 生成UUID v4
@@ -45,7 +51,7 @@ export class TestCaseKnowledgeBase {
   /**
    * 🔥 新增：根据系统名称生成集合名称
    */
-  private static getCollectionName(systemName?: string): string {
+  static getCollectionName(systemName?: string): string {
     if (!systemName) {
       return 'test_knowledge_default'; // 默认集合
     }
@@ -62,34 +68,78 @@ export class TestCaseKnowledgeBase {
     this.systemName = systemName;
     this.collectionName = TestCaseKnowledgeBase.getCollectionName(systemName);
 
-    // 连接Qdrant
-    const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
-    this.qdrant = new QdrantClient({ url: qdrantUrl });
-
-    // 检测使用哪个Embedding API
-    this.embeddingProvider = process.env.EMBEDDING_PROVIDER || 'gemini';
+    this.runtimeConfig = this.getEnvRuntimeConfig();
+    this.embeddingProvider = this.runtimeConfig.embeddingProvider;
     this.useGemini = this.embeddingProvider === 'gemini';
+    this.qdrant = new QdrantClient({
+      url: this.runtimeConfig.qdrantUrl,
+      checkCompatibility: false
+    });
+    this.openai = this.createOpenAIClient(this.runtimeConfig);
+  }
 
-    if (this.useGemini) {
-      // 使用Google Gemini Embedding（免费）
-      const geminiApiKey = process.env.GEMINI_API_KEY;
-      if (!geminiApiKey) {
-        throw new Error('❌ 请在.env中配置GEMINI_API_KEY');
-      }
-      // Gemini不使用OpenAI SDK，会在generateEmbedding中直接调用
-      this.openai = null as any; // 占位，不使用
-      console.log(`🔗 知识库服务初始化: Qdrant=${qdrantUrl}, System=${systemName || 'default'}, Collection=${this.collectionName}, Embedding=Google Gemini（免费）`);
-    } else {
-      // 使用OpenAI兼容的API（如OpenAI、Jina等）
-      const apiBaseUrl = process.env.EMBEDDING_API_BASE_URL || 'https://api.openai.com/v1';
-      const apiKey = process.env.EMBEDDING_API_KEY;
+  private getEnvRuntimeConfig(): KnowledgeSettings {
+    const provider = (process.env.EMBEDDING_PROVIDER || 'aliyun') as KnowledgeSettings['embeddingProvider'];
+    const providerDefaults: Record<string, { baseUrl: string; model: string; dimension: number }> = {
+      aliyun: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'text-embedding-v4', dimension: 1024 },
+      openai: { baseUrl: 'https://api.openai.com/v1', model: 'text-embedding-3-small', dimension: 1536 },
+      gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'text-embedding-004', dimension: 768 },
+      xinference: { baseUrl: 'http://localhost:9997/v1', model: 'bge-large-zh-v1.5', dimension: 1024 }
+    };
+    const fallback = providerDefaults[provider] || providerDefaults.aliyun;
+    const envDimension = parseInt(process.env.EMBEDDING_DIMENSION || '', 10);
 
-      this.openai = new OpenAI({
-        baseURL: apiBaseUrl,
-        apiKey: apiKey
-      });
-      console.log(`🔗 知识库服务初始化: Qdrant=${qdrantUrl}, System=${systemName || 'default'}, Collection=${this.collectionName}, Embedding=${apiBaseUrl}`);
+    return {
+      qdrantUrl: process.env.QDRANT_URL || 'http://172.19.5.223:6333',
+      embeddingProvider: providerDefaults[provider] ? provider : 'aliyun',
+      embeddingApiBaseUrl: (process.env.EMBEDDING_API_BASE_URL || fallback.baseUrl).replace(/\/$/, ''),
+      embeddingApiKey: process.env.EMBEDDING_API_KEY || process.env.GEMINI_API_KEY || '',
+      embeddingModel: process.env.EMBEDDING_MODEL || fallback.model,
+      embeddingDimension: Number.isFinite(envDimension) && envDimension > 0 ? envDimension : fallback.dimension
+    };
+  }
+
+  private createOpenAIClient(config: KnowledgeSettings): OpenAI {
+    return new OpenAI({
+      baseURL: config.embeddingApiBaseUrl,
+      apiKey: config.embeddingApiKey || 'not-required'
+    });
+  }
+
+  private getRuntimeConfigKey(config: KnowledgeSettings): string {
+    return JSON.stringify({
+      qdrantUrl: config.qdrantUrl,
+      embeddingProvider: config.embeddingProvider,
+      embeddingApiBaseUrl: config.embeddingApiBaseUrl,
+      embeddingApiKeySet: !!config.embeddingApiKey,
+      embeddingModel: config.embeddingModel,
+      embeddingDimension: config.embeddingDimension
+    });
+  }
+
+  private async ensureRuntimeConfig(): Promise<void> {
+    let config = this.runtimeConfig;
+    try {
+      config = await BackendSettingsService.getInstance().getKnowledgeSettings();
+    } catch (error) {
+      console.warn('加载知识库配置失败，使用环境变量配置:', error);
     }
+
+    const configKey = this.getRuntimeConfigKey(config);
+    if (configKey === this.runtimeConfigKey) {
+      return;
+    }
+
+    this.runtimeConfig = config;
+    this.runtimeConfigKey = configKey;
+    this.embeddingProvider = config.embeddingProvider;
+    this.useGemini = config.embeddingProvider === 'gemini';
+    this.qdrant = new QdrantClient({
+      url: config.qdrantUrl,
+      checkCompatibility: false
+    });
+    this.openai = this.createOpenAIClient(config);
+    console.log(`知识库运行配置已加载: Qdrant=${config.qdrantUrl}, Provider=${config.embeddingProvider}, Model=${config.embeddingModel}`);
   }
 
   /**
@@ -97,6 +147,7 @@ export class TestCaseKnowledgeBase {
    */
   async initCollection(): Promise<void> {
     try {
+      await this.ensureRuntimeConfig();
       // 检查集合是否已存在
       const collections = await this.qdrant.getCollections();
       const exists = collections.collections.some(c => c.name === this.collectionName);
@@ -106,15 +157,7 @@ export class TestCaseKnowledgeBase {
         return;
       }
 
-      // 根据embedding提供商确定向量维度
-      let vectorSize: number;
-      if (this.useGemini) {
-        vectorSize = 768;  // Gemini
-      } else if (this.embeddingProvider === 'aliyun') {
-        vectorSize = 1024; // 阿里云通义千问
-      } else {
-        vectorSize = 1536; // OpenAI默认
-      }
+      const vectorSize = this.getEmbeddingVectorSize();
 
       // 创建新集合
       await this.qdrant.createCollection(this.collectionName, {
@@ -136,6 +179,7 @@ export class TestCaseKnowledgeBase {
    */
   private async generateEmbedding(text: string): Promise<number[]> {
     try {
+      await this.ensureRuntimeConfig();
       if (this.useGemini) {
         return await this.generateGeminiEmbedding(text);
       } else {
@@ -151,13 +195,18 @@ export class TestCaseKnowledgeBase {
    * 使用Google Gemini生成向量
    */
   private async generateGeminiEmbedding(text: string): Promise<number[]> {
-    const apiKey = process.env.GEMINI_API_KEY;
-    const model = 'text-embedding-004';
+    const apiKey = this.runtimeConfig.embeddingApiKey;
+    const model = this.runtimeConfig.embeddingModel || 'text-embedding-004';
+    const baseUrl = (this.runtimeConfig.embeddingApiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
+
+    if (!apiKey) {
+      throw new Error('Gemini Embedding 需要配置 API Key');
+    }
 
     console.log(`🔄 调用Gemini Embedding API: 模型=${model}, 文本长度=${text.length}`);
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`,
+      `${baseUrl}/models/${model}:embedContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -192,7 +241,7 @@ export class TestCaseKnowledgeBase {
    * 使用OpenAI兼容API生成向量
    */
   private async generateOpenAIEmbedding(text: string): Promise<number[]> {
-    const model = process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+    const model = this.runtimeConfig.embeddingModel || 'text-embedding-3-small';
 
     console.log(`🔄 调用OpenAI Embedding API: 模型=${model}, 文本长度=${text.length}`);
 
@@ -207,6 +256,58 @@ export class TestCaseKnowledgeBase {
 
     console.log(`✅ OpenAI Embedding生成成功: 维度=${response.data[0].embedding.length}`);
     return response.data[0].embedding;
+  }
+
+  private getEmbeddingVectorSize(): number {
+    const explicitSize = Number(this.runtimeConfig.embeddingDimension);
+    if (Number.isFinite(explicitSize) && explicitSize > 0) {
+      return explicitSize;
+    }
+
+    if (this.useGemini) {
+      return 768;
+    }
+    if (this.embeddingProvider === 'aliyun') {
+      return 1024;
+    }
+    return 1536;
+  }
+
+  private buildKnowledgeItemFromPayload(payload: any, fallbackId: string): KnowledgeItem {
+    return {
+      id: String(payload?.originalId || payload?.id || fallbackId),
+      category: String(payload?.category || ''),
+      title: String(payload?.title || ''),
+      content: String(payload?.content || ''),
+      businessDomain: String(payload?.businessDomain || ''),
+      tags: Array.isArray(payload?.tags) ? payload.tags as string[] : [],
+      metadata: payload?.metadata || {},
+      createdAt: typeof payload?.createdAt === 'string' ? payload.createdAt : undefined,
+      updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : undefined
+    };
+  }
+
+  private buildKnowledgeFilter(params: {
+    businessDomain?: string;
+    category?: string;
+  }): any | undefined {
+    const must: any[] = [];
+
+    if (params.businessDomain) {
+      must.push({
+        key: 'businessDomain',
+        match: { value: params.businessDomain }
+      });
+    }
+
+    if (params.category) {
+      must.push({
+        key: 'category',
+        match: { value: params.category }
+      });
+    }
+
+    return must.length > 0 ? { must } : undefined;
   }
 
   /**
@@ -225,13 +326,15 @@ export class TestCaseKnowledgeBase {
           vector: vector,
           payload: {
             originalId: knowledge.id,  // 保存原始ID到payload中
+            id: knowledge.id,
             category: knowledge.category,
             title: knowledge.title,
             content: knowledge.content,
             businessDomain: knowledge.businessDomain,
             tags: knowledge.tags,
             metadata: knowledge.metadata || {},
-            createdAt: new Date().toISOString()
+            createdAt: knowledge.createdAt || new Date().toISOString(),
+            updatedAt: knowledge.updatedAt
           }
         }]
       });
@@ -291,29 +394,13 @@ export class TestCaseKnowledgeBase {
       const queryVector = await this.generateEmbedding(query);
 
       // 构建过滤条件
-      const filter: any = {
-        must: []
-      };
-
-      if (businessDomain) {
-        filter.must.push({
-          key: 'businessDomain',
-          match: { value: businessDomain }
-        });
-      }
-
-      if (category) {
-        filter.must.push({
-          key: 'category',
-          match: { value: category }
-        });
-      }
+      const filter = this.buildKnowledgeFilter({ businessDomain, category });
 
       // 在Qdrant中搜索
       const searchResult = await this.qdrant.search(this.collectionName, {
         vector: queryVector,
         limit: topK,
-        filter: filter.must.length > 0 ? filter : undefined,
+        filter,
         score_threshold: scoreThreshold,
         with_payload: true
       });
@@ -321,13 +408,7 @@ export class TestCaseKnowledgeBase {
       // 转换结果格式
       const results: SearchResult[] = searchResult.map(hit => ({
         knowledge: {
-          id: hit.payload!.originalId as string,  // 使用payload中的originalId
-          category: hit.payload!.category as string,
-          title: hit.payload!.title as string,
-          content: hit.payload!.content as string,
-          businessDomain: hit.payload!.businessDomain as string,
-          tags: hit.payload!.tags as string[],
-          metadata: hit.payload!.metadata
+          ...this.buildKnowledgeItemFromPayload(hit.payload, String(hit.id))
         },
         score: hit.score || 0
       }));
@@ -344,6 +425,48 @@ export class TestCaseKnowledgeBase {
   /**
    * 按类别搜索知识
    */
+  private async searchKnowledgeWithVector(params: {
+    query: string;
+    queryVector: number[];
+    businessDomain?: string;
+    category?: string;
+    topK?: number;
+    scoreThreshold?: number;
+  }): Promise<SearchResult[]> {
+    try {
+      const {
+        query,
+        queryVector,
+        businessDomain,
+        category,
+        topK = 5,
+        scoreThreshold = 0.5
+      } = params;
+
+      const filter = this.buildKnowledgeFilter({ businessDomain, category });
+      const searchResult = await this.qdrant.search(this.collectionName, {
+        vector: queryVector,
+        limit: topK,
+        filter,
+        score_threshold: scoreThreshold,
+        with_payload: true
+      });
+
+      const results: SearchResult[] = searchResult.map(hit => ({
+        knowledge: {
+          ...this.buildKnowledgeItemFromPayload(hit.payload, String(hit.id))
+        },
+        score: hit.score || 0
+      }));
+
+      console.log(`[KnowledgeSearch] query="${query.substring(0, 30)}...", category=${category || 'all'}, found=${results.length}`);
+      return results;
+    } catch (error) {
+      console.error('[KnowledgeSearch] Search failed:', error);
+      return [];
+    }
+  }
+
   async searchByCategory(params: {
     query: string;
     businessDomain?: string;
@@ -356,13 +479,14 @@ export class TestCaseKnowledgeBase {
     riskScenarios: SearchResult[];
   }> {
     const { query, businessDomain, topK = 3, scoreThreshold = 0.5 } = params;
+    const queryVector = await this.generateEmbedding(query);
 
     // 并行检索各类别知识
     const [businessRules, testPatterns, pitfalls, riskScenarios] = await Promise.all([
-      this.searchKnowledge({ query, businessDomain, category: 'business_rule', topK, scoreThreshold }),
-      this.searchKnowledge({ query, businessDomain, category: 'test_pattern', topK, scoreThreshold }),
-      this.searchKnowledge({ query, businessDomain, category: 'pitfall', topK, scoreThreshold }),
-      this.searchKnowledge({ query, businessDomain, category: 'risk_scenario', topK, scoreThreshold })
+      this.searchKnowledgeWithVector({ query, queryVector, businessDomain, category: 'business_rule', topK, scoreThreshold }),
+      this.searchKnowledgeWithVector({ query, queryVector, businessDomain, category: 'test_pattern', topK, scoreThreshold }),
+      this.searchKnowledgeWithVector({ query, queryVector, businessDomain, category: 'pitfall', topK, scoreThreshold }),
+      this.searchKnowledgeWithVector({ query, queryVector, businessDomain, category: 'risk_scenario', topK, scoreThreshold })
     ]);
 
     return {
@@ -381,6 +505,7 @@ export class TestCaseKnowledgeBase {
     categoryCounts: { [key: string]: number };
   }> {
     try {
+      await this.ensureRuntimeConfig();
       const collection = await this.qdrant.getCollection(this.collectionName);
 
       // 获取各类别统计（需要遍历所有记录，实际生产中建议定期缓存）
@@ -406,13 +531,110 @@ export class TestCaseKnowledgeBase {
   }
 
   /**
+   * 列出知识库中的知识，不依赖向量搜索，适合管理页加载和导出。
+   */
+  async listKnowledge(params: {
+    businessDomain?: string;
+    category?: string;
+    limit?: number;
+  } = {}): Promise<KnowledgeItem[]> {
+    try {
+      await this.ensureRuntimeConfig();
+      const limit = Math.max(1, Math.min(params.limit || 1000, 10000));
+      const filter = this.buildKnowledgeFilter({
+        businessDomain: params.businessDomain,
+        category: params.category
+      });
+      const result: KnowledgeItem[] = [];
+      let offset: any = undefined;
+
+      do {
+        const scrollResult: any = await this.qdrant.scroll(this.collectionName, {
+          limit: Math.min(256, limit - result.length),
+          offset,
+          filter,
+          with_payload: true,
+          with_vector: false
+        });
+
+        for (const point of scrollResult.points || []) {
+          result.push(this.buildKnowledgeItemFromPayload(point.payload, String(point.id)));
+          if (result.length >= limit) break;
+        }
+
+        offset = scrollResult.next_page_offset;
+      } while (offset && result.length < limit);
+
+      return result;
+    } catch (error) {
+      console.error('❌ 获取知识列表失败:', error);
+      return [];
+    }
+  }
+
+  async updateKnowledge(knowledgeId: string, knowledge: KnowledgeItem): Promise<void> {
+    await this.ensureRuntimeConfig();
+    const scrollResult: any = await this.qdrant.scroll(this.collectionName, {
+      limit: 10000,
+      with_payload: true,
+      with_vector: false
+    });
+    const existingPoint = (scrollResult.points || []).find((point: any) => {
+      const payload = point.payload || {};
+      return String(point.id) === knowledgeId
+        || String(payload.originalId || '') === knowledgeId
+        || String(payload.id || '') === knowledgeId;
+    });
+    const textToEmbed = `${knowledge.title}\n${knowledge.content}`;
+    const vector = await this.generateEmbedding(textToEmbed);
+    const now = new Date().toISOString();
+
+    await this.qdrant.upsert(this.collectionName, {
+      points: [{
+        id: existingPoint?.id || this.generateUUID(),
+        vector,
+        payload: {
+          originalId: knowledgeId,
+          id: knowledgeId,
+          category: knowledge.category,
+          title: knowledge.title,
+          content: knowledge.content,
+          businessDomain: knowledge.businessDomain,
+          tags: knowledge.tags,
+          metadata: knowledge.metadata || {},
+          createdAt: existingPoint?.payload?.createdAt || knowledge.createdAt || now,
+          updatedAt: now
+        }
+      }]
+    });
+  }
+
+  /**
    * 删除知识
    */
   async deleteKnowledge(knowledgeId: string): Promise<void> {
     try {
-      await this.qdrant.delete(this.collectionName, {
-        points: [knowledgeId]
+      await this.ensureRuntimeConfig();
+      const scrollResult: any = await this.qdrant.scroll(this.collectionName, {
+        limit: 10000,
+        with_payload: true,
+        with_vector: false
       });
+      const pointIds = (scrollResult.points || [])
+        .filter((point: any) => {
+          const payload = point.payload || {};
+          return String(point.id) === knowledgeId
+            || String(payload.originalId || '') === knowledgeId
+            || String(payload.id || '') === knowledgeId;
+        })
+        .map((point: any) => point.id);
+
+      if (pointIds.length === 0) {
+        console.warn(`⚠️ 未找到要删除的知识: ${knowledgeId}`);
+        return;
+      }
+
+      await this.qdrant.delete(this.collectionName, { points: pointIds });
       console.log(`✅ 知识已删除: ${knowledgeId}`);
     } catch (error) {
       console.error(`❌ 删除知识失败: ${knowledgeId}`, error);
@@ -425,6 +647,7 @@ export class TestCaseKnowledgeBase {
    */
   async clearAll(): Promise<void> {
     try {
+      await this.ensureRuntimeConfig();
       await this.qdrant.deleteCollection(this.collectionName);
       await this.initCollection();
       console.log('✅ 知识库已清空并重新初始化');
@@ -441,6 +664,7 @@ export class TestCaseKnowledgeBase {
    */
   async listAllCollections(): Promise<string[]> {
     try {
+      await this.ensureRuntimeConfig();
       const collections = await this.qdrant.getCollections();
       return collections.collections
         .map(c => c.name)
@@ -456,6 +680,7 @@ export class TestCaseKnowledgeBase {
    */
   async collectionExists(systemName?: string): Promise<boolean> {
     try {
+      await this.ensureRuntimeConfig();
       const collectionName = TestCaseKnowledgeBase.getCollectionName(systemName);
       const collections = await this.qdrant.getCollections();
       return collections.collections.some(c => c.name === collectionName);
@@ -478,6 +703,7 @@ export class TestCaseKnowledgeBase {
    */
   async deleteCollectionForSystem(systemName: string): Promise<void> {
     try {
+      await this.ensureRuntimeConfig();
       const collectionName = TestCaseKnowledgeBase.getCollectionName(systemName);
       await this.qdrant.deleteCollection(collectionName);
       console.log(`✅ 已删除系统 "${systemName}" 的知识库集合: ${collectionName}`);

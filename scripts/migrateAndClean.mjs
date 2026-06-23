@@ -4,7 +4,11 @@
 
 import fetch from 'node-fetch';
 
-const QDRANT_URL = 'http://localhost:6333';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
 
 // 有效集合列表（保留）
 const VALID_COLLECTIONS = [
