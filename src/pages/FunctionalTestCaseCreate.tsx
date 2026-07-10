@@ -570,6 +570,9 @@ export function FunctionalTestCaseCreate() {
             preconditions: updatedTestCase.preconditions,
             testData: updatedTestCase.testData
           });
+          if (typeof updatedTestCase.module === 'string') {
+            setFormData((prev) => ({ ...prev, module: updatedTestCase.module }));
+          }
           setDetailModalOpen(false);
           showToast.success('测试用例已更新');
           return;

@@ -21,7 +21,7 @@ import {
   Col,
   Popconfirm,
   Upload,
-  Tabs
+  InputNumber
 } from 'antd';
 import {
   PlusOutlined,
@@ -32,7 +32,8 @@ import {
   DeleteOutlined,
   EditOutlined,
   DatabaseOutlined,
-  BulbOutlined
+  BulbOutlined,
+  SettingOutlined
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import * as systemService from '../services/systemService';
@@ -41,10 +42,26 @@ import knowledgeService, {
   KNOWLEDGE_CATEGORIES,
   KnowledgeStats
 } from '../services/knowledgeService';
+import type { KnowledgeSettings } from '../services/settingsService';
 
 const { TextArea } = Input;
 const { Option } = Select;
-const { TabPane } = Tabs;
+
+const formatMetadataForForm = (metadata?: Record<string, any>) => {
+  if (metadata === undefined || metadata === null) {
+    return '';
+  }
+
+  if (typeof metadata === 'string') {
+    return metadata;
+  }
+
+  try {
+    return JSON.stringify(metadata, null, 2);
+  } catch {
+    return '';
+  }
+};
 
 interface System {
   id: number;
@@ -55,6 +72,7 @@ interface System {
 
 const KnowledgeManagement: React.FC = () => {
   const [form] = Form.useForm();
+  const [configForm] = Form.useForm<KnowledgeSettings>();
   const [systems, setSystems] = useState<System[]>([]);
   const [selectedSystem, setSelectedSystem] = useState<string>('');
   const [knowledgeList, setKnowledgeList] = useState<KnowledgeItem[]>([]);
@@ -65,6 +83,9 @@ const KnowledgeManagement: React.FC = () => {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('');
   const [testSearchVisible, setTestSearchVisible] = useState(false);
+  const [configVisible, setConfigVisible] = useState(false);
+  const [configTesting, setConfigTesting] = useState(false);
+  const [configSaving, setConfigSaving] = useState(false);
 
   // 加载系统列表
   useEffect(() => {
@@ -97,19 +118,19 @@ const KnowledgeManagement: React.FC = () => {
     setLoading(true);
     try {
       // 并行加载统计和知识列表
-      const [statsData, searchResults] = await Promise.all([
+      const [statsData, knowledgeItems] = await Promise.all([
         knowledgeService.getSystemStats(selectedSystem),
-        knowledgeService.searchKnowledge({
-          query: searchKeyword || ' ', // 用空格查询所有
+        knowledgeService.listKnowledge({
           systemName: selectedSystem,
-          topK: 100
+          category: filterCategory || undefined,
+          limit: 1000
         })
       ]);
 
       setStats(statsData);
-      // 确保searchResults是数组
-      if (Array.isArray(searchResults)) {
-        setKnowledgeList(searchResults.map(r => r.knowledge));
+      // 确保knowledgeItems是数组
+      if (Array.isArray(knowledgeItems)) {
+        setKnowledgeList(knowledgeItems);
       } else {
         setKnowledgeList([]);
       }
@@ -164,7 +185,8 @@ const KnowledgeManagement: React.FC = () => {
     setEditingKnowledge(knowledge);
     form.setFieldsValue({
       ...knowledge,
-      tags: knowledge.tags.join(', ')
+      tags: knowledge.tags.join(', '),
+      metadata: formatMetadataForForm(knowledge.metadata)
     });
     setModalVisible(true);
   };
@@ -172,6 +194,16 @@ const KnowledgeManagement: React.FC = () => {
   const handleSave = async () => {
     try {
       const values = await form.validateFields();
+      let parsedMetadata: Record<string, any> | undefined;
+
+      if (values.metadata?.trim()) {
+        try {
+          parsedMetadata = JSON.parse(values.metadata);
+        } catch {
+          message.error('额外元数据必须是合法的 JSON 格式');
+          return;
+        }
+      }
 
       const knowledge: KnowledgeItem = {
         category: values.category,
@@ -181,7 +213,7 @@ const KnowledgeManagement: React.FC = () => {
         tags: typeof values.tags === 'string'
           ? values.tags.split(',').map((t: string) => t.trim()).filter((t: string) => t)
           : values.tags,
-        metadata: values.metadata ? JSON.parse(values.metadata) : undefined
+        metadata: parsedMetadata
       };
 
       // 验证
@@ -196,7 +228,11 @@ const KnowledgeManagement: React.FC = () => {
         return;
       }
 
-      await knowledgeService.addKnowledge(selectedSystem, knowledge);
+      if (editingKnowledge?.id) {
+        await knowledgeService.updateKnowledge(selectedSystem, editingKnowledge.id, knowledge);
+      } else {
+        await knowledgeService.addKnowledge(selectedSystem, knowledge);
+      }
       message.success(editingKnowledge ? '更新成功' : '添加成功');
       setModalVisible(false);
       loadKnowledgeAndStats();
@@ -230,7 +266,9 @@ const KnowledgeManagement: React.FC = () => {
           content: (
             <div style={{ maxHeight: 300, overflow: 'auto' }}>
               {result.errors.map((err, i) => (
-                <div key={i}>• {err}</div>
+                <div key={i}>
+                  • {typeof err === 'string' ? err : `${err.title || `第${err.index + 1}条`}: ${err.error}`}
+                </div>
               ))}
             </div>
           )
@@ -254,20 +292,115 @@ const KnowledgeManagement: React.FC = () => {
     message.success('导出成功');
   };
 
+  const handleDelete = async (knowledge: KnowledgeItem) => {
+    if (!selectedSystem || !knowledge.id) {
+      message.warning('缺少系统或知识ID，无法删除');
+      return;
+    }
+
+    try {
+      await knowledgeService.deleteKnowledge(selectedSystem, knowledge.id);
+      message.success('删除成功');
+      loadKnowledgeAndStats();
+    } catch (error: any) {
+      message.error('删除失败: ' + (error.message || '未知错误'));
+      console.error(error);
+    }
+  };
+
+  const handleOpenConfig = async () => {
+    setConfigVisible(true);
+    try {
+      const config = await knowledgeService.getKnowledgeConfig();
+      configForm.setFieldsValue(config);
+    } catch (error: any) {
+      message.error('加载知识库配置失败: ' + (error.message || '未知错误'));
+    }
+  };
+
+  const handleProviderChange = (provider: KnowledgeSettings['embeddingProvider']) => {
+    const defaults: Record<KnowledgeSettings['embeddingProvider'], Partial<KnowledgeSettings>> = {
+      aliyun: {
+        embeddingApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        embeddingModel: 'text-embedding-v4',
+        embeddingDimension: 1024
+      },
+      openai: {
+        embeddingApiBaseUrl: 'https://api.openai.com/v1',
+        embeddingModel: 'text-embedding-3-small',
+        embeddingDimension: 1536
+      },
+      gemini: {
+        embeddingApiBaseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        embeddingModel: 'text-embedding-004',
+        embeddingDimension: 768
+      },
+      xinference: {
+        embeddingApiBaseUrl: 'http://localhost:9997/v1',
+        embeddingModel: 'bge-large-zh-v1.5',
+        embeddingDimension: 1024
+      }
+    };
+    configForm.setFieldsValue({
+      embeddingProvider: provider,
+      ...defaults[provider]
+    });
+  };
+
+  const handleSaveConfig = async () => {
+    try {
+      const values = await configForm.validateFields();
+      setConfigSaving(true);
+      const saved = await knowledgeService.saveKnowledgeConfig(values);
+      configForm.setFieldsValue(saved);
+      message.success('知识库模型配置已保存');
+      setConfigVisible(false);
+      if (selectedSystem) {
+        loadKnowledgeAndStats();
+      }
+    } catch (error: any) {
+      if (error.errorFields) {
+        message.error('请检查配置项');
+      } else {
+        message.error('保存配置失败: ' + (error.message || '未知错误'));
+      }
+    } finally {
+      setConfigSaving(false);
+    }
+  };
+
+  const handleTestConfig = async () => {
+    try {
+      const values = await configForm.validateFields();
+      setConfigTesting(true);
+      const result = await knowledgeService.testKnowledgeConfig(values);
+      const data = result.data || {};
+      message.success(`连接成功，向量维度 ${data.embeddingDimension || '-'}，Qdrant集合 ${data.collectionCount ?? '-'}`);
+    } catch (error: any) {
+      if (error.errorFields) {
+        message.error('请检查配置项');
+      } else {
+        message.error('连接测试失败: ' + (error.message || '未知错误'));
+      }
+    } finally {
+      setConfigTesting(false);
+    }
+  };
+
   const columns: ColumnsType<KnowledgeItem> = [
     {
       title: '类别',
       dataIndex: 'category',
       key: 'category',
-      width: 120,
+      width: 130,
       render: (category: string) => {
         const config = knowledgeService.getCategoryConfig(category);
         return config ? (
-          <Tag color={config.color}>
+          <Tag color={config.color} style={{ marginInlineEnd: 0 }}>
             {config.icon} {config.label}
           </Tag>
         ) : (
-          <Tag>{category}</Tag>
+          <Tag style={{ marginInlineEnd: 0 }}>{category}</Tag>
         );
       }
     },
@@ -275,17 +408,23 @@ const KnowledgeManagement: React.FC = () => {
       title: '标题',
       dataIndex: 'title',
       key: 'title',
-      width: 250,
-      ellipsis: true
+      width: 240,
+      ellipsis: true,
+      render: (text: string) => (
+        <Tooltip title={text}>
+          <span>{text}</span>
+        </Tooltip>
+      )
     },
     {
       title: '内容',
       dataIndex: 'content',
       key: 'content',
       ellipsis: true,
+      width: 520,
       render: (text: string) => (
         <Tooltip title={text}>
-          <div style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {text}
           </div>
         </Tooltip>
@@ -295,28 +434,45 @@ const KnowledgeManagement: React.FC = () => {
       title: '业务领域',
       dataIndex: 'businessDomain',
       key: 'businessDomain',
-      width: 120
+      width: 160,
+      ellipsis: true,
+      render: (text: string) => (
+        <Tooltip title={text}>
+          <span>{text}</span>
+        </Tooltip>
+      )
     },
     {
       title: '标签',
       dataIndex: 'tags',
       key: 'tags',
-      width: 200,
+      width: 260,
       render: (tags: string[]) => (
-        <>
+        <Tooltip title={tags.join(', ')}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
           {tags.map(tag => (
-            <Tag key={tag} style={{ marginBottom: 4 }}>{tag}</Tag>
+            <Tag
+              key={tag}
+              style={{
+                maxWidth: '100%',
+                marginInlineEnd: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis'
+              }}
+            >
+              {tag}
+            </Tag>
           ))}
-        </>
+          </div>
+        </Tooltip>
       )
     },
     {
       title: '操作',
       key: 'action',
-      width: 120,
-      fixed: 'right',
+      width: 150,
       render: (_, record) => (
-        <Space>
+        <Space size="small" style={{ whiteSpace: 'nowrap' }}>
           <Button
             type="link"
             size="small"
@@ -325,6 +481,21 @@ const KnowledgeManagement: React.FC = () => {
           >
             编辑
           </Button>
+          <Popconfirm
+            title="确认删除这条知识？"
+            okText="删除"
+            cancelText="取消"
+            onConfirm={() => handleDelete(record)}
+          >
+            <Button
+              type="link"
+              danger
+              size="small"
+              icon={<DeleteOutlined />}
+            >
+              删除
+            </Button>
+          </Popconfirm>
         </Space>
       )
     }
@@ -472,6 +643,12 @@ const KnowledgeManagement: React.FC = () => {
               >
                 测试搜索
               </Button>
+              <Button
+                icon={<SettingOutlined />}
+                onClick={handleOpenConfig}
+              >
+                模型配置
+              </Button>
             </Space>
           </div>
 
@@ -481,12 +658,13 @@ const KnowledgeManagement: React.FC = () => {
             dataSource={knowledgeList}
             rowKey="id"
             loading={loading}
+            tableLayout="fixed"
             pagination={{
               pageSize: 10,
               showSizeChanger: true,
               showTotal: total => `共 ${total} 条知识`
             }}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1460 }}
           />
         </Space>
       </Card>
@@ -584,6 +762,99 @@ const KnowledgeManagement: React.FC = () => {
         width={900}
       >
         <TestSearchPanel systemName={selectedSystem} />
+      </Modal>
+
+      <Modal
+        title="知识库模型配置"
+        open={configVisible}
+        onOk={handleSaveConfig}
+        onCancel={() => setConfigVisible(false)}
+        confirmLoading={configSaving}
+        okText="保存配置"
+        cancelText="取消"
+        width={760}
+        destroyOnHidden={true}
+        footer={[
+          <Button key="test" onClick={handleTestConfig} loading={configTesting}>
+            测试连接
+          </Button>,
+          <Button key="cancel" onClick={() => setConfigVisible(false)}>
+            取消
+          </Button>,
+          <Button key="save" type="primary" loading={configSaving} onClick={handleSaveConfig}>
+            保存配置
+          </Button>
+        ]}
+      >
+        <Form
+          form={configForm}
+          layout="vertical"
+          initialValues={{
+            qdrantUrl: 'http://172.19.5.223:6333',
+            embeddingProvider: 'aliyun',
+            embeddingApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+            embeddingModel: 'text-embedding-v4',
+            embeddingDimension: 1024
+          }}
+        >
+          <Form.Item
+            name="qdrantUrl"
+            label="Qdrant 地址"
+            rules={[{ required: true, message: '请输入 Qdrant 地址' }]}
+          >
+            <Input placeholder="http://172.19.5.223:6333" />
+          </Form.Item>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item
+                name="embeddingProvider"
+                label="Embedding 提供商"
+                rules={[{ required: true, message: '请选择提供商' }]}
+              >
+                <Select onChange={handleProviderChange}>
+                  <Option value="aliyun">阿里云 DashScope</Option>
+                  <Option value="xinference">Xinference</Option>
+                  <Option value="openai">OpenAI 兼容</Option>
+                  <Option value="gemini">Google Gemini</Option>
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                name="embeddingDimension"
+                label="向量维度"
+                rules={[{ required: true, message: '请输入向量维度' }]}
+              >
+                <InputNumber min={1} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Form.Item
+            name="embeddingApiBaseUrl"
+            label="Embedding API Base URL"
+            rules={[{ required: true, message: '请输入 Embedding API Base URL' }]}
+          >
+            <Input placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+          </Form.Item>
+
+          <Form.Item
+            name="embeddingApiKey"
+            label="Embedding API Key"
+            tooltip="Xinference 本地服务通常可以留空；阿里云/OpenAI/Gemini 需要填写对应 Key。"
+          >
+            <Input.Password placeholder="阿里云 DashScope Key / OpenAI Key / 可留空" autoComplete="off" />
+          </Form.Item>
+
+          <Form.Item
+            name="embeddingModel"
+            label="Embedding 模型"
+            rules={[{ required: true, message: '请输入 Embedding 模型名称' }]}
+          >
+            <Input placeholder="text-embedding-v4" />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

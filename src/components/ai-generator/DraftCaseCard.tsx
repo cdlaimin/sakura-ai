@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Check, Star, Tag, List } from 'lucide-react';
+import { AlertTriangle, Check, Star, Tag, List, FileText } from 'lucide-react';
 import { clsx } from 'clsx';
 
 interface DraftCaseCardProps {
@@ -57,6 +57,12 @@ export function DraftCaseCard({
   onViewDetail,
   saved = false
 }: DraftCaseCardProps) {
+  const isFiltered = Boolean(testCase?.isFiltered);
+  const requirementRefs = Array.from(new Set([
+    ...((testCase?.coveredRequirementRefs || []) as string[]),
+    ...(((testCase?.testPoints || []) as any[]).flatMap((tp: any) => tp.coveredRequirementRefs || []) as string[])
+  ]));
+
   return (
     <motion.div
       variants={itemVariants}
@@ -66,6 +72,8 @@ export function DraftCaseCard({
         "cursor-pointer hover:shadow-md",
         saved
           ? "border-green-300 bg-green-50/30"  // 🆕 已保存的样式
+          : isFiltered
+          ? "border-orange-300 bg-orange-50/40 hover:border-orange-400"
           : selected
           ? "border-purple-500 shadow-md ring-2 ring-purple-500/20"
           : "border-gray-200 hover:border-purple-300"
@@ -108,7 +116,7 @@ export function DraftCaseCard({
       </div>
 
       {/* 章节标记 */}
-      {sectionId ? (
+          {sectionId ? (
         <div className="absolute top-2.5 left-2.5 flex items-center gap-1.5">
           <span className="px-2 py-0.5 bg-purple-100 text-purple-700
                          text-[10px] font-medium rounded-full">
@@ -128,6 +136,12 @@ export function DraftCaseCard({
 
       {/* 用例内容 */}
       <div className="mt-6">
+        {isFiltered && (
+          <div className="mb-2 inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-orange-100 text-orange-700 border border-orange-200 text-[10px] font-semibold" title={testCase?.filterReason || '数据一致性验证失败'}>
+            <AlertTriangle className="w-3 h-3" />
+            待确认
+          </div>
+        )}
         <h4 className="text-sm font-semibold text-gray-900 mb-1.5 line-clamp-2
                        min-h-[1rem]">
           {name}
@@ -142,6 +156,27 @@ export function DraftCaseCard({
         {sectionName && (
           <p className="text-xs text-gray-600 mb-3">
             📄 {sectionName}
+          </p>
+        )}
+
+        {requirementRefs.length > 0 && (
+          <div className="flex items-center gap-1.5 flex-wrap mb-2.5">
+            <FileText className="w-3 h-3 text-blue-500" />
+            <span className="text-[10px] font-semibold text-gray-600">关联需求:</span>
+            {requirementRefs.slice(0, 4).map(ref => (
+              <span key={ref} className="px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] rounded border border-blue-200">
+                {ref}
+              </span>
+            ))}
+            {requirementRefs.length > 4 && (
+              <span className="text-[10px] text-gray-500">+{requirementRefs.length - 4}</span>
+            )}
+          </div>
+        )}
+
+        {isFiltered && testCase?.filterReason && (
+          <p className="text-[10px] text-orange-700 bg-orange-100 border border-orange-200 rounded-md px-2 py-1 mb-2 line-clamp-2">
+            过滤原因：{testCase.filterReason}
           </p>
         )}
 

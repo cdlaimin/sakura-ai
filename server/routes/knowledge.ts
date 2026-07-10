@@ -86,12 +86,45 @@ router.get('/search', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/v1/knowledge/:systemName/list
+ * 获取指定系统的知识列表（管理页使用，不依赖语义搜索）
+ */
+router.get('/:systemName/list', async (req: Request, res: Response) => {
+  try {
+    const { systemName } = req.params;
+    const { businessDomain, category, limit } = req.query;
+
+    const items = await knowledgeService.listKnowledge(
+      systemName === 'default' ? undefined : systemName,
+      {
+        businessDomain: businessDomain as string | undefined,
+        category: category as string | undefined,
+        limit: limit ? parseInt(limit as string) : undefined
+      }
+    );
+
+    res.json({
+      systemName: systemName === 'default' ? '默认' : systemName,
+      items,
+      total: items.length
+    });
+  } catch (error) {
+    console.error('获取知识列表失败:', error);
+    res.status(500).json({
+      error: '获取知识列表失败',
+      message: error instanceof Error ? error.message : '未知错误'
+    });
+  }
+});
+
+/**
  * POST /api/v1/knowledge/test-search
  * 测试知识检索（用于验证知识库效果）
  */
 router.post('/test-search', async (req: Request, res: Response) => {
   try {
-    const { testQuery, systemName, businessDomain } = req.body;
+    const { systemName, businessDomain } = req.body;
+    const testQuery = req.body.testQuery || req.body.query;
 
     if (!testQuery || !testQuery.trim()) {
       return res.status(400).json({ error: '测试查询不能为空' });
@@ -165,6 +198,70 @@ router.post('/:systemName/add', async (req: Request, res: Response) => {
     console.error('添加知识失败:', error);
     res.status(500).json({
       error: '添加知识失败',
+      message: error instanceof Error ? error.message : '未知错误'
+    });
+  }
+});
+
+/**
+ * PUT /api/v1/knowledge/:systemName/items/:knowledgeId
+ * 更新指定知识
+ */
+router.put('/:systemName/items/:knowledgeId', async (req: Request, res: Response) => {
+  try {
+    const { systemName, knowledgeId } = req.params;
+    const knowledge = req.body;
+
+    const validation = knowledgeService.validateKnowledgeItem(knowledge);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: '数据验证失败',
+        errors: validation.errors
+      });
+    }
+
+    await knowledgeService.updateKnowledge(
+      systemName === 'default' ? undefined : systemName,
+      knowledgeId,
+      knowledge
+    );
+
+    res.json({
+      message: '知识更新成功',
+      systemName: systemName === 'default' ? '默认' : systemName,
+      knowledgeId
+    });
+  } catch (error) {
+    console.error('更新知识失败:', error);
+    res.status(500).json({
+      error: '更新知识失败',
+      message: error instanceof Error ? error.message : '未知错误'
+    });
+  }
+});
+
+/**
+ * DELETE /api/v1/knowledge/:systemName/items/:knowledgeId
+ * 删除指定知识
+ */
+router.delete('/:systemName/items/:knowledgeId', async (req: Request, res: Response) => {
+  try {
+    const { systemName, knowledgeId } = req.params;
+
+    await knowledgeService.deleteKnowledge(
+      systemName === 'default' ? undefined : systemName,
+      knowledgeId
+    );
+
+    res.json({
+      message: '知识删除成功',
+      systemName: systemName === 'default' ? '默认' : systemName,
+      knowledgeId
+    });
+  } catch (error) {
+    console.error('删除知识失败:', error);
+    res.status(500).json({
+      error: '删除知识失败',
       message: error instanceof Error ? error.message : '未知错误'
     });
   }

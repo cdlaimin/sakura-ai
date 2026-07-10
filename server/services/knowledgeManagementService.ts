@@ -23,6 +23,21 @@ export interface KnowledgeSearchParams {
   scoreThreshold?: number;
 }
 
+export interface KnowledgeStatsResponse {
+  systemName: string;
+  collectionName: string;
+  totalCount: number;
+  categoryCounts: { [key: string]: number };
+  totalKnowledge: number;
+  byCategory: {
+    business_rule: number;
+    test_pattern: number;
+    pitfall: number;
+    risk_scenario: number;
+    [key: string]: number;
+  };
+}
+
 export interface BatchImportResult {
   success: number;
   failed: number;
@@ -57,6 +72,31 @@ export class KnowledgeManagementService {
     };
 
     await kb.addKnowledge(knowledgeItem);
+  }
+
+  async listKnowledge(
+    systemName?: string,
+    params: {
+      businessDomain?: string;
+      category?: string;
+      limit?: number;
+    } = {}
+  ): Promise<KnowledgeItem[]> {
+    const kb = this.getKnowledgeBase(systemName);
+    return kb.listKnowledge(params);
+  }
+
+  async updateKnowledge(
+    systemName: string | undefined,
+    knowledgeId: string,
+    knowledge: KnowledgeItemInput
+  ): Promise<void> {
+    const kb = this.getKnowledgeBase(systemName);
+    await kb.initCollection();
+    await kb.updateKnowledge(knowledgeId, {
+      id: knowledgeId,
+      ...knowledge
+    });
   }
 
   /**
@@ -108,7 +148,7 @@ export class KnowledgeManagementService {
       businessDomain: params.businessDomain,
       category: params.category,
       topK: params.topK || 10,
-      scoreThreshold: params.scoreThreshold || 0.5
+      scoreThreshold: params.scoreThreshold ?? 0.5
     });
   }
 
@@ -144,15 +184,24 @@ export class KnowledgeManagementService {
     collectionName: string;
     totalCount: number;
     categoryCounts: { [key: string]: number };
-  }> {
+  } & KnowledgeStatsResponse> {
     const kb = this.getKnowledgeBase(systemName);
     const stats = await kb.getStats();
+    const normalizedCategoryCounts = {
+      business_rule: stats.categoryCounts.business_rule || 0,
+      test_pattern: stats.categoryCounts.test_pattern || 0,
+      pitfall: stats.categoryCounts.pitfall || 0,
+      risk_scenario: stats.categoryCounts.risk_scenario || 0,
+      ...stats.categoryCounts
+    };
 
     return {
       systemName: systemName || '默认',
       collectionName: kb.getCollectionName(),
       totalCount: stats.totalCount,
-      categoryCounts: stats.categoryCounts
+      categoryCounts: stats.categoryCounts,
+      totalKnowledge: stats.totalCount,
+      byCategory: normalizedCategoryCounts
     };
   }
 

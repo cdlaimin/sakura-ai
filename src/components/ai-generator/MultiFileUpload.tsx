@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Modal } from 'antd';
 import { Upload, FileText, FileCode, Folder, Archive, X, CheckCircle, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { clsx } from 'clsx';
-import { MAX_FILE_SIZE, MAX_FILES } from '../../config/upload';
+import { MAX_FILE_SIZE, MAX_FILES, MAX_CONTAINER_FILE_SIZE, MAX_CONTAINER_FILE_SIZE_MB, isContainerFormat } from '../../config/upload';
 import { countZipHtmlJsFiles } from '../../utils/fileReader';
 import { showToast } from '../../utils/toast';
 
@@ -150,6 +150,13 @@ export function MultiFileUpload({
     };
   }, [uploadedFiles]);
 
+  // 按文件类型返回大小上限：容器/二进制格式（docx/doc/pdf/zip）本地解析为文本后才送 AI，放宽到 100MB；
+  // 其余纯文本类沿用 maxSize（默认 10MB）
+  const getSizeLimit = useCallback(
+    (file: File): number => (isContainerFormat(file.name) ? MAX_CONTAINER_FILE_SIZE : maxSize),
+    [maxSize]
+  );
+
   // 验证文件类型和大小
   const validateFile = useCallback((file: File): UploadedFile => {
     console.log('--- validateFile 验证文件:', file.name);
@@ -188,26 +195,27 @@ export function MultiFileUpload({
       error = '仅支持 HTML / JS / PDF / DOC / DOCX / Markdown / TXT / ZIP';
     }
 
-    // 检测文件大小
-    if (file.size > maxSize) {
+    // 检测文件大小（按类型采用不同上限）
+    const sizeLimit = getSizeLimit(file);
+    if (file.size > sizeLimit) {
       status = 'invalid';
-      error = `文件过大 (最大 ${Math.round(maxSize / 1024 / 1024)}MB)`;
+      error = `文件过大 (最大 ${Math.round(sizeLimit / 1024 / 1024)}MB)`;
       console.log('    文件大小超限:', {
         size: file.size,
-        maxSize: maxSize,
+        sizeLimit,
         sizeInMB: (file.size / 1024 / 1024).toFixed(2) + 'MB'
       });
     }
 
     console.log('    验证结果:', { type, status, error });
     return { file, type, status, error };
-  }, [maxSize]);
+  }, [getSizeLimit]);
 
   // 处理文件拖拽
   const onDrop = useCallback((acceptedFiles: File[]) => {
     console.log('=== MultiFileUpload onDrop 调试 ===');
     console.log('接收到的文件数量:', acceptedFiles.length);
-    console.log('maxSize 限制:', maxSize, `(${Math.round(maxSize / 1024 / 1024)}MB)`);
+    console.log('大小上限:', `文本 ${Math.round(maxSize / 1024 / 1024)}MB / 容器(docx,pdf,zip) ${MAX_CONTAINER_FILE_SIZE_MB}MB`);
     
     // 打印每个文件的详细信息
     acceptedFiles.forEach((file, index) => {
@@ -216,12 +224,13 @@ export function MultiFileUpload({
         size: file.size,
         sizeInMB: (file.size / 1024 / 1024).toFixed(2) + 'MB',
         type: file.type,
-        isOversized: file.size > maxSize
+        sizeLimitMB: Math.round(getSizeLimit(file) / 1024 / 1024) + 'MB',
+        isOversized: file.size > getSizeLimit(file)
       });
     });
     
-    // 检测超大文件
-    const oversized = acceptedFiles.filter(file => file.size > maxSize);
+    // 检测超大文件（按类型采用不同上限）
+    const oversized = acceptedFiles.filter(file => file.size > getSizeLimit(file));
     console.log('超大文件数量:', oversized.length);
     
     if (oversized.length > 0) {
@@ -270,7 +279,7 @@ export function MultiFileUpload({
         .map(f => f.file);
       onFilesChange(validFiles);
     }
-  }, [uploadedFiles, maxFiles, maxSize, onFilesChange, validateFile]);
+  }, [uploadedFiles, maxFiles, maxSize, onFilesChange, validateFile, getSizeLimit]);
 
   const applyFilteredFolderFiles = useCallback(
     (raw: File[]) => {
@@ -419,7 +428,8 @@ export function MultiFileUpload({
       >
         <div className="space-y-4">
           <p className="text-gray-700">
-            以下文件超出 <span className="font-semibold text-red-600">{Math.round(maxSize / 1024 / 1024)}MB</span> 的大小限制，无法上传：
+            以下文件超出大小限制（文本类 <span className="font-semibold text-red-600">{Math.round(maxSize / 1024 / 1024)}MB</span>，
+            Word/PDF/ZIP 等 <span className="font-semibold text-red-600">{MAX_CONTAINER_FILE_SIZE_MB}MB</span>），无法上传：
           </p>
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-60 overflow-y-auto">
             {oversizedFiles.map((file, index) => (
@@ -441,7 +451,8 @@ export function MultiFileUpload({
             <ul className="text-sm text-blue-700 mt-2 ml-4 list-disc space-y-1">
               <li>将大文件拆分为多个小文件</li>
               <li>压缩或优化文件内容</li>
-              <li>单个文件大小建议控制在 {Math.round(maxSize / 1024 / 1024)}MB 以内，以确保 AI 模型最佳处理效果</li>
+              <li>纯文本类（HTML / JS / Markdown / TXT）单个不超过 {Math.round(maxSize / 1024 / 1024)}MB</li>
+              <li>Word / PDF / ZIP 等会在本地解析为文本，单个不超过 {MAX_CONTAINER_FILE_SIZE_MB}MB（图片不会被识别，仅提取文字）</li>
             </ul>
           </div>
         </div>
@@ -565,7 +576,7 @@ export function MultiFileUpload({
             <p className="text-sm text-gray-500">
               {isDragActive
                 ? '支持批量拖拽上传'
-                : '支持上传多种格式文件，最多 ' + (Number.isFinite(maxFiles) ? maxFiles : '不限') + ' 个文件，单个文件大小不超过 ' + Math.round(maxSize / 1024 / 1024) + 'MB'}
+                : '支持多种格式，最多 ' + (Number.isFinite(maxFiles) ? maxFiles : '不限') + ' 个文件；文本类单个 ≤ ' + Math.round(maxSize / 1024 / 1024) + 'MB，Word/PDF/ZIP ≤ ' + MAX_CONTAINER_FILE_SIZE_MB + 'MB'}
             </p>
             {/* {!isDragActive && (
               <>
@@ -773,7 +784,7 @@ export function MultiFileUpload({
       {uploadedFiles.length === 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <p className="text-sm text-blue-700 leading-relaxed">
-            💡 <strong>温馨提示：</strong>支持拖拽 Axure 导出文件夹（自动识别 HTML/JS），或上传 PDF / DOC / DOCX / Markdown / TXT / ZIP，最多上传 {Number.isFinite(maxFiles) ? maxFiles : '不限'} 个文件，单个文件不超过 {Math.round(maxSize / 1024 / 1024)}MB。<br />
+            💡 <strong>温馨提示：</strong>支持拖拽 Axure 导出文件夹（自动识别 HTML/JS），或上传 PDF / DOC / DOCX / Markdown / TXT / ZIP，最多上传 {Number.isFinite(maxFiles) ? maxFiles : '不限'} 个文件；文本类单个不超过 {Math.round(maxSize / 1024 / 1024)}MB，Word/PDF/ZIP 单个不超过 {MAX_CONTAINER_FILE_SIZE_MB}MB（仅提取文字，图片不会被识别）。<br />
           </p>
           <p className="text-sm text-blue-700 leading-relaxed mt-1">
             💡 <strong>大文件提示：</strong>ZIP 会自动解压，仅解析 HTML / HTM / JS；解压后可参与解析的 HTML+JS 总数上限为 {Number.isFinite(maxFiles) ? maxFiles : '不限'} 个。<br />

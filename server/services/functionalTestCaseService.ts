@@ -1239,20 +1239,20 @@ export class FunctionalTestCaseService {
   /**
    * 🆕 阶段1：智能测试场景拆分（新接口）
    */
-  async analyzeTestScenarios(requirementDoc: string) {
+  async analyzeTestScenarios(requirementDoc: string, systemName?: string, moduleName?: string) {
     const { FunctionalTestCaseAIService } = await import('./functionalTestCaseAIService.js');
     const aiService = new FunctionalTestCaseAIService();
-    return await aiService.analyzeTestScenarios(requirementDoc);
+    return await aiService.analyzeTestScenarios(requirementDoc, systemName, moduleName);
   }
 
   /**
    * 🆕 阶段1：智能测试模块拆分（兼容性接口）
    * @deprecated 使用 analyzeTestScenarios 代替
    */
-  async analyzeTestModules(requirementDoc: string) {
+  async analyzeTestModules(requirementDoc: string, systemName?: string, moduleName?: string) {
     const { FunctionalTestCaseAIService } = await import('./functionalTestCaseAIService.js');
     const aiService = new FunctionalTestCaseAIService();
-    return await aiService.analyzeTestModules(requirementDoc);
+    return await aiService.analyzeTestModules(requirementDoc, systemName, moduleName);
   }
 
   /**
@@ -1263,7 +1263,9 @@ export class FunctionalTestCaseService {
     scenarioName: string,
     scenarioDescription: string,
     requirementDoc: string,
-    relatedSections: string[]
+    relatedSections: string[],
+    systemName?: string,
+    moduleName?: string
   ) {
     const { FunctionalTestCaseAIService } = await import('./functionalTestCaseAIService.js');
     const aiService = new FunctionalTestCaseAIService();
@@ -1272,7 +1274,9 @@ export class FunctionalTestCaseService {
       scenarioName,
       scenarioDescription,
       requirementDoc,
-      relatedSections
+      relatedSections,
+      systemName,
+      moduleName
     );
   }
 

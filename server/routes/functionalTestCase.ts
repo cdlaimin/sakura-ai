@@ -714,7 +714,7 @@ export function createFunctionalTestCaseRoutes(): Router {
    */
   router.post('/analyze-scenarios', async (req: Request, res: Response) => {
     try {
-      const { requirementDoc, sessionId } = req.body;
+      const { requirementDoc, sessionId, systemName, moduleName } = req.body;
 
       if (!requirementDoc) {
         return res.status(400).json({
@@ -725,7 +725,7 @@ export function createFunctionalTestCaseRoutes(): Router {
 
       console.log(`🎯 阶段1：智能测试场景拆分 - sessionId: ${sessionId}`);
 
-      const scenarios = await getService().analyzeTestScenarios(requirementDoc);
+      const scenarios = await getService().analyzeTestScenarios(requirementDoc, systemName, moduleName);
 
       res.json({
         success: true,
@@ -750,7 +750,7 @@ export function createFunctionalTestCaseRoutes(): Router {
    */
   router.post('/analyze-modules', async (req: Request, res: Response) => {
     try {
-      const { requirementDoc, sessionId } = req.body;
+      const { requirementDoc, sessionId, systemName, moduleName } = req.body;
 
       if (!requirementDoc) {
         return res.status(400).json({
@@ -761,7 +761,7 @@ export function createFunctionalTestCaseRoutes(): Router {
 
       console.log(`🎯 阶段1：开始测试模块拆分 - sessionId: ${sessionId}`);
 
-      const modules = await getService().analyzeTestModules(requirementDoc); // 兼容性调用
+      const modules = await getService().analyzeTestModules(requirementDoc, systemName, moduleName); // 兼容性调用
 
       res.json({
         success: true,
@@ -792,7 +792,9 @@ export function createFunctionalTestCaseRoutes(): Router {
         scenarioDescription,
         requirementDoc,
         relatedSections,
-        sessionId
+        sessionId,
+        systemName,
+        moduleName
       } = req.body;
 
       if (!scenarioId || !scenarioName || !requirementDoc || !relatedSections) {
@@ -809,7 +811,9 @@ export function createFunctionalTestCaseRoutes(): Router {
         scenarioName,
         scenarioDescription,
         requirementDoc,
-        relatedSections
+        relatedSections,
+        systemName,
+        moduleName
       );
 
       res.json({
@@ -822,9 +826,15 @@ export function createFunctionalTestCaseRoutes(): Router {
       });
     } catch (error: any) {
       console.error('❌ 生成测试点失败:', error);
-      res.status(500).json({
+      const message = error.message || '生成测试点失败';
+      const status = message.includes('(402)') || message.includes('配额不足')
+        ? 402
+        : message.includes('(429)') || message.includes('限流')
+            ? 429
+            : 500;
+      res.status(status).json({
         success: false,
-        error: error.message
+        error: message
       });
     }
   });

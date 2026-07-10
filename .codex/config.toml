@@ -1,0 +1,8 @@
+[mcp_servers.shrimp-task-manager]
+command = "node"
+args = ['C:\Users\谭恒\.mcp-servers\mcp-shrimp-task-manager\dist\index.js']
+
+[mcp_servers.shrimp-task-manager.env]
+DATA_DIR = 'd:\AI_mvp\ai_test\project\tasks_data'
+ENABLE_GUI = "true"
+PROMPT_LANGUAGE = "zh"

@@ -191,24 +191,18 @@ describe('SettingsService', () => {
       );
     });
 
-    it('should return errors for invalid maxTokens', async () => {
-      const invalidSettings: LLMSettings = {
+    it('should allow maxTokens above 8000', async () => {
+      const validSettings: LLMSettings = {
         selectedModelId: 'gpt-4o',
         apiKey: 'sk-valid-api-key',
         customConfig: {
-          maxTokens: 10000 // Invalid: > 8000
+          maxTokens: 32768
         }
       };
 
-      const result = await service.validateLLMSettings(invalidSettings);
+      const result = await service.validateLLMSettings(validSettings);
       
-      expect(result.isValid).toBe(false);
-      expect(result.errors).toContainEqual(
-        expect.objectContaining({
-          field: 'maxTokens',
-          code: 'OUT_OF_RANGE'
-        })
-      );
+      expect(result.isValid).toBe(true);
     });
   });
 

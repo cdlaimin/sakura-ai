@@ -15,6 +15,8 @@ export interface TestPoint {
   steps?: string;               // 测试步骤 (可选，已移至测试用例层)
   expectedResult?: string;      // 预期结果 (可选，已移至测试用例层)
   riskLevel: 'low' | 'medium' | 'high';  // 风险等级 (必填)
+  testPointType?: 'main' | 'abnormal' | 'boundary' | 'permission' | 'state' | 'security' | 'regression';
+  coveredRequirementRefs?: string[];      // 关联需求编号
   testScenario?: string;        // 测试场景 (可选)
   description?: string;         // 测试点描述 (可选)
   coverageAreas?: string;       // 覆盖范围 (可选)

@@ -50,9 +50,21 @@ export interface ValidationError {
   code: string;
 }
 
+export type EmbeddingProvider = 'aliyun' | 'openai' | 'gemini' | 'xinference';
+
+export interface KnowledgeSettings {
+  qdrantUrl: string;
+  embeddingProvider: EmbeddingProvider;
+  embeddingApiBaseUrl: string;
+  embeddingApiKey?: string;
+  embeddingModel: string;
+  embeddingDimension?: number;
+}
+
 // 完整的设置结构
 export interface AppSettings {
   llm: LLMSettings;
+  knowledge: KnowledgeSettings;
   system: {
     timeout: number;
     maxConcurrency: number;
@@ -347,9 +359,21 @@ export class SettingsService {
   }
 
   // 私有方法：获取默认设置
+  private getDefaultKnowledgeSettings(): KnowledgeSettings {
+    return {
+      qdrantUrl: 'http://172.19.5.223:6333',
+      embeddingProvider: 'aliyun',
+      embeddingApiBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      embeddingApiKey: '',
+      embeddingModel: 'text-embedding-v4',
+      embeddingDimension: 1024
+    };
+  }
+
   private getDefaultSettings(): AppSettings {
     return {
       llm: this.getDefaultLLMSettings(),
+      knowledge: this.getDefaultKnowledgeSettings(),
       system: {
         timeout: 300,
         maxConcurrency: 10,
@@ -366,6 +390,10 @@ export class SettingsService {
       llm: {
         ...defaults.llm,
         ...this.migrateLegacyLLMSettings(stored.llm as LLMSettings)
+      },
+      knowledge: {
+        ...defaults.knowledge,
+        ...stored.knowledge
       },
       system: {
         ...defaults.system,

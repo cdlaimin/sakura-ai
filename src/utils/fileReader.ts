@@ -294,22 +294,32 @@ function formatAsTable(lines: string[]): string {
 async function readDocxFile(file: File): Promise<{ content: string; hasImages: boolean; warnings: string[] }> {
   try {
     const arrayBuffer = await file.arrayBuffer();
-    
+
+    // mammoth 仅支持 .docx（OOXML，本质是 ZIP，文件头 50 4B）；
+    // 旧版 .doc 为二进制 OLE 复合文档（文件头 D0 CF 11 E0 A1 B1 1A E1），无法解析。
+    // 命中则抛出友好提示，避免下方 mammoth 抛出难以理解的错误。
+    const head = new Uint8Array(arrayBuffer.slice(0, 8));
+    const isLegacyDoc =
+      head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0 &&
+      head[4] === 0xa1 && head[5] === 0xb1 && head[6] === 0x1a && head[7] === 0xe1;
+    if (isLegacyDoc) {
+      throw new Error('这是旧版 .doc（二进制）格式，暂不支持直接解析。请用 Word / WPS 打开后“另存为 → Word 文档(.docx)”，再上传 .docx 文件。');
+    }
+
     const warnings: string[] = [];
     let hasImages = false;
     
-    // 使用 convertToHtml 并配置图片转换（保留更多格式）
+    // 使用 convertToHtml 保留更多格式。
+    // 注意：不再把图片内联为 base64 —— 否则图片多的大文档会把提取文本撑大到几十 MB，
+    // 对纯文本大模型无意义，还会撑爆 token / 拖垮分片 / 卡死浏览器。
+    // 这里只标记“存在图片”，正文用占位符表示，仅提取文字。
     const htmlResult = await mammoth.convertToHtml(
       { arrayBuffer },
       {
-        // 配置图片转换为 base64
-        convertImage: mammoth.images.imgElement(function(image: any) {
-          return image.read("base64").then(function(imageBuffer: any) {
-            hasImages = true;
-            return {
-              src: "data:" + image.contentType + ";base64," + imageBuffer
-            };
-          });
+        // 图片不读取 base64，仅置空 src 占位，避免内容膨胀
+        convertImage: mammoth.images.imgElement(function() {
+          hasImages = true;
+          return { src: '' };
         }),
         // 样式映射（正确的语法）
         styleMap: [
@@ -363,7 +373,12 @@ async function readDocxFile(file: File): Promise<{ content: string; hasImages: b
       warnings
     };
   } catch (error) {
-    throw new Error('读取DOCX文件失败：' + (error as Error).message);
+    const msg = (error as Error).message || '';
+    // 旧版 .doc 友好提示原样抛出，避免被“读取DOCX文件失败：”前缀掩盖
+    if (msg.includes('旧版 .doc')) {
+      throw error;
+    }
+    throw new Error('读取DOCX文件失败：' + msg);
   }
 }
 
@@ -385,9 +400,9 @@ function convertHtmlToMarkdown(html: string): string {
   markdown = markdown.replace(/<h5[^>]*>(.*?)<\/h5>/gi, '\n\n##### $1\n\n');
   markdown = markdown.replace(/<h6[^>]*>(.*?)<\/h6>/gi, '\n\n###### $1\n\n');
   
-  // 🆕 保留图片（转换为Markdown格式）
-  markdown = markdown.replace(/<img[^>]*src=["']([^"']*)["'][^>]*alt=["']([^"']*)["'][^>]*>/gi, '\n\n![图片: $2]($1)\n\n');
-  markdown = markdown.replace(/<img[^>]*src=["']([^"']*)["'][^>]*>/gi, '\n\n![图片]($1)\n\n');
+  // 图片仅保留占位符（丢弃 src，避免把 base64 等大体积内容带入正文）
+  markdown = markdown.replace(/<img[^>]*alt=["']([^"']+)["'][^>]*>/gi, '\n\n[图片: $1]\n\n');
+  markdown = markdown.replace(/<img[^>]*>/gi, '\n\n[图片]\n\n');
   
   // 转换列表
   markdown = markdown.replace(/<ul[^>]*>/gi, '\n');

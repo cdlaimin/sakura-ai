@@ -2,7 +2,7 @@ import { PrismaClient } from '../../src/generated/prisma/index.js';
 import { DatabaseService } from './databaseService.js';
 import { modelRegistry } from '../../src/services/modelRegistry.js';
 import { validateLLMSettings as validateLLMSettingsShared } from '../../src/utils/llmSettingsValidation.js';
-import type { LLMSettings, AppSettings, ValidationResult } from '../../src/services/settingsService.js';
+import type { LLMSettings, AppSettings, KnowledgeSettings, ValidationResult } from '../../src/services/settingsService.js';
 import { getNow } from '../utils/timezone.js';
 
 // 后端设置服务类
@@ -38,6 +38,33 @@ export class BackendSettingsService {
     } catch (error) {
       console.warn('Failed to load LLM settings from database, using defaults:', error);
       return this.migrateLegacyLLMSettings(this.getDefaultLLMSettings());
+    }
+  }
+
+  public async getKnowledgeSettings(): Promise<KnowledgeSettings> {
+    try {
+      const settings = await this.loadSettingsFromDB();
+      return settings.knowledge;
+    } catch (error) {
+      console.warn('Failed to load knowledge settings from database, using defaults:', error);
+      return this.getDefaultKnowledgeSettings();
+    }
+  }
+
+  public async saveKnowledgeSettings(knowledgeSettings: KnowledgeSettings): Promise<KnowledgeSettings> {
+    try {
+      const normalized = this.normalizeKnowledgeSettings(knowledgeSettings);
+      const currentSettings = await this.loadSettingsFromDB();
+      currentSettings.knowledge = normalized;
+      await this.saveSettingsToDB(currentSettings);
+      console.log('Knowledge settings saved');
+      return normalized;
+    } catch (error: any) {
+      console.error('鉂?Failed to save knowledge settings:', error);
+      if (!error.type) {
+        error.type = 'CONFIG_ERROR';
+      }
+      throw error;
     }
   }
 
@@ -227,9 +254,69 @@ export class BackendSettingsService {
   }
 
   // 获取默认设置
+  private getDefaultKnowledgeSettings(): KnowledgeSettings {
+    const provider = (process.env.EMBEDDING_PROVIDER || 'aliyun') as KnowledgeSettings['embeddingProvider'];
+    const providerDefaults: Record<string, { baseUrl: string; model: string; dimension: number }> = {
+      aliyun: {
+        baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        model: 'text-embedding-v4',
+        dimension: 1024
+      },
+      openai: {
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'text-embedding-3-small',
+        dimension: 1536
+      },
+      gemini: {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+        model: 'text-embedding-004',
+        dimension: 768
+      },
+      xinference: {
+        baseUrl: 'http://localhost:9997/v1',
+        model: 'bge-large-zh-v1.5',
+        dimension: 1024
+      }
+    };
+    const fallback = providerDefaults[provider] || providerDefaults.aliyun;
+    const envDimension = parseInt(process.env.EMBEDDING_DIMENSION || '', 10);
+
+    return {
+      qdrantUrl: process.env.QDRANT_URL || 'http://172.19.5.223:6333',
+      embeddingProvider: providerDefaults[provider] ? provider : 'aliyun',
+      embeddingApiBaseUrl: process.env.EMBEDDING_API_BASE_URL || fallback.baseUrl,
+      embeddingApiKey: process.env.EMBEDDING_API_KEY || process.env.GEMINI_API_KEY || '',
+      embeddingModel: process.env.EMBEDDING_MODEL || fallback.model,
+      embeddingDimension: Number.isFinite(envDimension) && envDimension > 0 ? envDimension : fallback.dimension
+    };
+  }
+
+  private normalizeKnowledgeSettings(settings: Partial<KnowledgeSettings>): KnowledgeSettings {
+    const defaults = this.getDefaultKnowledgeSettings();
+    const merged = {
+      ...defaults,
+      ...settings
+    };
+    const provider = ['aliyun', 'openai', 'gemini', 'xinference'].includes(merged.embeddingProvider)
+      ? merged.embeddingProvider
+      : defaults.embeddingProvider;
+    const dimension = Number(merged.embeddingDimension);
+
+    return {
+      ...merged,
+      qdrantUrl: String(merged.qdrantUrl || defaults.qdrantUrl).trim(),
+      embeddingProvider: provider,
+      embeddingApiBaseUrl: String(merged.embeddingApiBaseUrl || defaults.embeddingApiBaseUrl).trim().replace(/\/$/, ''),
+      embeddingApiKey: String(merged.embeddingApiKey || ''),
+      embeddingModel: String(merged.embeddingModel || defaults.embeddingModel).trim(),
+      embeddingDimension: Number.isFinite(dimension) && dimension > 0 ? dimension : defaults.embeddingDimension
+    };
+  }
+
   private getDefaultSettings(): AppSettings {
     return {
       llm: this.getDefaultLLMSettings(),
+      knowledge: this.getDefaultKnowledgeSettings(),
       system: {
         timeout: 300,
         maxConcurrency: 10,
@@ -247,6 +334,7 @@ export class BackendSettingsService {
         ...defaults.llm,
         ...this.migrateLegacyLLMSettings(stored.llm as LLMSettings)
       },
+      knowledge: this.normalizeKnowledgeSettings(stored.knowledge || defaults.knowledge),
       system: {
         ...defaults.system,
         ...stored.system

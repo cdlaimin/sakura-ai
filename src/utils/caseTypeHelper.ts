@@ -141,3 +141,24 @@ export const getAllCaseTypes = (): Array<{ value: CaseType; label: string }> => 
   }));
 };
 
+/** 用例类型排序权重（数值越小越靠前，与 TestCases 筛选一致） */
+export const CASE_TYPE_SORT_ORDER: Record<CaseType, number> = {
+  SMOKE: 0,
+  FULL: 1,
+  BOUNDARY: 2,
+  ABNORMAL: 3,
+  PERFORMANCE: 4,
+  SECURITY: 5,
+  USABILITY: 6,
+  COMPATIBILITY: 7,
+  RELIABILITY: 8,
+};
+
+/**
+ * 获取用例类型排序权重
+ */
+export const getCaseTypeSortOrder = (caseType?: string | null): number => {
+  if (!caseType) return CASE_TYPE_SORT_ORDER.FULL;
+  return CASE_TYPE_SORT_ORDER[caseType as CaseType] ?? 99;
+};
+

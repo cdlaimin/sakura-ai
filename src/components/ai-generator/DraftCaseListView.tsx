@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Check, Star, List, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown } from 'lucide-react';
+import { AlertTriangle, Check, Star, List, Eye, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ChevronDown, FileText } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Tooltip, Dropdown } from 'antd';
-import { getCaseTypeInfo } from '../../utils/caseTypeHelper';
+import { getCaseTypeInfo, getAllCaseTypes, getCaseTypeSortOrder } from '../../utils/caseTypeHelper';
 import { countSteps } from '../../utils/stepsCounter';
 
 interface DraftCaseListViewProps {
@@ -75,9 +75,8 @@ export function DraftCaseListView({
       if (!sortBy) return 0;
       
       if (sortBy === 'type') {
-        const typeOrder = { 'SMOKE': 0, 'FULL': 1, 'ABNORMAL': 2, 'BOUNDARY': 3 };
-        const aOrder = typeOrder[a.caseType as keyof typeof typeOrder] ?? 4;
-        const bOrder = typeOrder[b.caseType as keyof typeof typeOrder] ?? 4;
+        const aOrder = getCaseTypeSortOrder(a.caseType);
+        const bOrder = getCaseTypeSortOrder(b.caseType);
         return sortOrder === 'asc' ? aOrder - bOrder : bOrder - aOrder;
       }
       
@@ -123,65 +122,23 @@ export function DraftCaseListView({
     setSortOrder('asc');
   };
 
-  // 🆕 类型筛选菜单
+  // 🆕 类型筛选菜单（九类，与 TestCases 一致）
   const caseTypeMenu = {
     items: [
-      {
-        key: 'SMOKE',
+      ...getAllCaseTypes().map(({ value, label }) => ({
+        key: value,
         label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('SMOKE')}>
+          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter(value)}>
             <input
               type="checkbox"
-              checked={caseTypeFilter.includes('SMOKE')}
+              checked={caseTypeFilter.includes(value)}
               onChange={() => {}}
               className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
             />
-            <span>🔥 冒烟用例</span>
+            <span>{label}用例</span>
           </div>
         ),
-      },
-      {
-        key: 'FULL',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('FULL')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('FULL')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>✅ 全量用例</span>
-          </div>
-        ),
-      },
-      {
-        key: 'ABNORMAL',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('ABNORMAL')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('ABNORMAL')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>⚠️ 异常用例</span>
-          </div>
-        ),
-      },
-      {
-        key: 'BOUNDARY',
-        label: (
-          <div className="flex items-center gap-2" onClick={() => toggleCaseTypeFilter('BOUNDARY')}>
-            <input
-              type="checkbox"
-              checked={caseTypeFilter.includes('BOUNDARY')}
-              onChange={() => {}}
-              className="w-3.5 h-3.5 rounded border-gray-300 text-purple-600 pointer-events-none"
-            />
-            <span>🎯 边界用例</span>
-          </div>
-        ),
-      },
+      })),
       { type: 'divider' },
       {
         key: 'reset',
@@ -371,9 +328,14 @@ export function DraftCaseListView({
       {/* 数据行 */}
       {filteredAndSortedCases.map((tc, index) => {
         const saved = tc.saved && !tc.modified;
+        const isFiltered = Boolean(tc.isFiltered);
         const selected = (!saved && selectedTestCases[tc.id]) || false;
         const priority = priorityConfig[tc.priority] || priorityConfig.medium;
         const typeInfo = getCaseTypeInfo(tc.caseType);
+        const requirementRefs = Array.from(new Set([
+          ...((tc.coveredRequirementRefs || []) as string[]),
+          ...(((tc.testPoints || []) as any[]).flatMap((tp: any) => tp.coveredRequirementRefs || []) as string[])
+        ]));
 
         return (
           <div
@@ -381,7 +343,7 @@ export function DraftCaseListView({
             className={clsx(
               "flex items-center gap-3 px-3 py-2 border-b border-gray-100 transition-all cursor-pointer group text-xs",
               "hover:bg-purple-50/40",
-              saved ? "bg-green-50/30" : selected ? "bg-purple-50/60" : "bg-white"
+              saved ? "bg-green-50/30" : isFiltered ? "bg-orange-50/50" : selected ? "bg-purple-50/60" : "bg-white"
             )}
             onClick={() => onViewDetail(tc)}
           >
@@ -427,6 +389,24 @@ export function DraftCaseListView({
               {tc.description && (
                 <p className="text-xs text-gray-400 truncate mt-0.5">{tc.description}</p>
               )}
+              {isFiltered && tc.filterReason && (
+                <p className="flex items-center gap-1 text-[10px] text-orange-700 bg-orange-100 border border-orange-200 rounded px-1.5 py-0.5 mt-1 truncate">
+                  <AlertTriangle className="w-3 h-3 flex-shrink-0" />
+                  <span className="truncate">过滤原因：{tc.filterReason}</span>
+                </p>
+              )}
+              {requirementRefs.length > 0 && (
+                <p className="flex items-center gap-1 flex-wrap text-[10px] text-blue-700 mt-0.5">
+                  <FileText className="w-3 h-3" />
+                  <span className="text-gray-500">关联需求:</span>
+                  {requirementRefs.slice(0, 4).map(ref => (
+                    <span key={ref} className="px-1 py-0.5 bg-blue-50 border border-blue-200 rounded">
+                      {ref}
+                    </span>
+                  ))}
+                  {requirementRefs.length > 4 && <span className="text-gray-500">+{requirementRefs.length - 4}</span>}
+                </p>
+              )}
             </span>
 
             {/* 类型 */}
@@ -459,6 +439,10 @@ export function DraftCaseListView({
             <div className="w-[56px] text-center">
               {saved ? (
                 <span className="text-[10px] font-medium text-green-600 bg-green-100 px-1.5 py-0.5 rounded">已保存</span>
+              ) : isFiltered ? (
+                <Tooltip title={tc.filterReason || '数据一致性验证失败'}>
+                  <span className="text-[10px] font-medium text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded cursor-help">待确认</span>
+                </Tooltip>
               ) : tc.saved && tc.modified ? (
                 <span className="text-[10px] font-medium text-yellow-600 bg-yellow-100 px-1.5 py-0.5 rounded">已修改</span>
               ) : (

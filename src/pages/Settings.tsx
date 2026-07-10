@@ -1024,7 +1024,7 @@ export function Settings() {
               <input
                 type="number"
                 min="1"
-                max="8000"
+                step="1"
                 value={formData.customConfig?.maxTokens || 1500}
                 onChange={(e) => handleFieldChange('customConfig.maxTokens', parseInt(e.target.value))}
                 className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
@@ -1034,7 +1034,7 @@ export function Settings() {
               {getFieldError('maxTokens') && (
                 <p className="mt-1 text-sm text-red-600">{getFieldError('maxTokens')}</p>
               )}
-              <p className="mt-1 text-sm text-gray-500">控制AI响应的最大长度</p>
+              <p className="mt-1 text-sm text-gray-500">控制AI响应的最大长度；实际可用上限取决于当前模型和API提供商</p>
             </div>
           </div>
 
